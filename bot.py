@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
-#  ZARRA RESORT — Telegram AI-ассистент  (версия 4, на Groq)
+#  ZARRA RESORT — Telegram AI-ассистент  (версия 5, на Groq)
 #  Работает и при прямом общении с ботом, и при подключении к профилю
 #  (Настройки -> Автоматизация чатов).
 #
-#  ЧТО НОВОГО В v4:
+#  ЧТО НОВОГО В v5:
+#   - Исправлена отправка галереи: теперь решение "показать фото/видео"
+#     принимает сам ИИ по контексту всего диалога (а не по словам в одном
+#     сообщении). Реальные фото приходят надёжно, без заглушек.
+#   - В заявке появилась кнопка-ссылка «✍️ Открыть чат гостя».
+#
+#  Из v4:
 #   - Заявки на бронь уходят в рабочую ГРУППУ с кнопками
 #     «✅ Подтвердить / ❌ Отклонить / 🙋 Беру в работу».
-#     При нажатии бот дописывает, кто и когда обработал заявку.
 #   - В базе знаний: предоплата 50%, условия отмены, вместимость
 #     (ночёвка vs посадочные), дни рождения и мероприятия.
 #
@@ -142,9 +147,18 @@ RULES = """
   на время (в пределах посадочных мест).
 
 ПРО ФОТО И ВИДЕО:
-- У ассистента есть галерея фото и видео шале. Если гость интересуется, как
-  выглядит шале — предложи посмотреть фото и видео (галерея отправится сама).
-  Например: «Могу показать фото и видео — какое шале интересует, Люкс или Комфорт?»
+- У ассистента есть готовые галереи фото и видео: lux (Президент Люкс),
+  comfort (Комфорт), exterior (территория/общие виды).
+- Если гость интересуется, как выглядит шале — предложи посмотреть, уточнив,
+  какое именно. Например: «Могу показать фото и видео — Люкс или Комфорт?»
+- Когда гость согласился посмотреть КОНКРЕТНОЕ шале (или территорию) — добавь
+  в самом конце ответа служебный тег: <gallery>lux</gallery>
+  (или <gallery>comfort</gallery>, или <gallery>exterior</gallery>).
+  Тег служебный — гость его не видит, реальные фото/видео придут автоматически.
+- НЕ пиши «отправляю», «галерея загружается», не вставляй заглушки и не
+  описывай фото словами. Перед тегом достаточно короткой фразы, например:
+  «Конечно! Смотрите 👇». Тег ставь только если гость хочет посмотреть именно
+  это шале, и только один тег за ответ.
 
 СБОР ЗАЯВКИ НА БРОНЬ:
 - Когда гость хочет забронировать, вежливо собери данные:
@@ -236,9 +250,9 @@ collecting: dict[int, str] = {}    # кто сейчас грузит галер
 
 # --- Распознавание "покажи фото/видео" ----------------------------------------
 GAL_WORDS = (
-    "фото", "видео", "посмотр", "покаж", "показа", "как выглядит", "галере",
-    "снимк", "rasm", "surat", "video", "photo", "ko'r", "ko‘r", "look",
-    "picture", "image", "rasmlar",
+    "фото", "видео", "посмотр", "покаж", "показа", "увидет", "как выглядит",
+    "галере", "снимк", "rasm", "surat", "video", "photo", "ko'r", "ko‘r",
+    "ko'rsat", "look", "picture", "image", "rasmlar",
 )
 LUX_WORDS = ("люкс", "lux", "президент", "prezident", "люксовый")
 COMF_WORDS = ("комфорт", "komfort", "comfort")
@@ -290,10 +304,12 @@ async def send_gallery(chat_id: int, bcid, category: str) -> bool:
 
 # --- Заявки на бронь -----------------------------------------------------------
 LEAD_RE = re.compile(r"<lead>\s*(\{.*?\})\s*</lead>", re.DOTALL | re.IGNORECASE)
+GALLERY_RE = re.compile(r"<gallery>\s*(lux|comfort|exterior)\s*</gallery>", re.IGNORECASE)
 
 
-def extract_lead(text: str):
-    """Вынимает служебный блок заявки из ответа ИИ. Возвращает (чистый_текст, заявка|None)."""
+def extract_controls(text: str):
+    """Вынимает служебные теги из ответа ИИ.
+    Возвращает (чистый_текст, заявка|None, категория_галереи|None)."""
     lead = None
     m = LEAD_RE.search(text)
     if m:
@@ -301,17 +317,26 @@ def extract_lead(text: str):
             lead = json.loads(m.group(1))
         except Exception:
             lead = None
+    gal = None
+    mg = GALLERY_RE.search(text)
+    if mg:
+        gal = mg.group(1).lower()
     clean = LEAD_RE.sub("", text)
-    clean = re.sub(r"</?lead>", "", clean, flags=re.IGNORECASE)  # на всякий случай
-    return clean.strip(), lead
+    clean = GALLERY_RE.sub("", clean)
+    clean = re.sub(r"</?lead>|</?gallery>", "", clean, flags=re.IGNORECASE)  # на всякий
+    return clean.strip(), lead, gal
 
 
-def lead_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def lead_keyboard(username: str | None = None) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton(text="✅ Подтвердить", callback_data="lead:confirm"),
          InlineKeyboardButton(text="❌ Отклонить", callback_data="lead:reject")],
         [InlineKeyboardButton(text="🙋 Беру в работу", callback_data="lead:take")],
-    ])
+    ]
+    if username:
+        rows.append([InlineKeyboardButton(text="✍️ Открыть чат гостя",
+                                          url=f"https://t.me/{username}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def format_lead(lead: dict, number: int, source: str) -> str:
@@ -355,7 +380,7 @@ def guest_source(message: Message) -> str:
     return u.full_name or "—"
 
 
-async def post_lead(lead: dict, chat_key: str, source: str):
+async def post_lead(lead: dict, chat_key: str, source: str, username: str | None = None):
     """Отправляет заявку в группу (или владельцу), с защитой от дублей."""
     signature = json.dumps(lead, ensure_ascii=False, sort_keys=True)
     if last_lead.get(chat_key) == signature:
@@ -370,13 +395,13 @@ async def post_lead(lead: dict, chat_key: str, source: str):
     save_store()
     text = format_lead(lead, store["lead_counter"], source)
     try:
-        await bot.send_message(dest, text, reply_markup=lead_keyboard())
+        await bot.send_message(dest, text, reply_markup=lead_keyboard(username))
     except Exception as e:
         log.warning(f"post_lead error: {e}")
 
 
 async def ask_ai(chat_key: str, user_text: str):
-    """Возвращает (ответ_гостю, заявка|None)."""
+    """Возвращает (ответ_гостю, заявка|None, категория_галереи|None)."""
     turns = history.setdefault(chat_key, [])
     turns.append({"role": "user", "text": user_text})
     turns[:] = turns[-12:]
@@ -394,13 +419,13 @@ async def ask_ai(chat_key: str, user_text: str):
         raw = (resp.choices[0].message.content or "").strip()
         if not raw:
             raise ValueError("пустой ответ")
-        answer, lead = extract_lead(raw)
+        answer, lead, gal = extract_controls(raw)
         turns.append({"role": "assistant", "text": answer})
-        return answer, lead
+        return answer, lead, gal
     except Exception as e:
         log.warning(f"AI error: {e}")
         return ("Извините, я сейчас не могу ответить. Пожалуйста, свяжитесь с нами: "
-                "+998 87 591 33 30 (09:00-18:00) или +998 97 614 77 74 (18:00-23:00)."), None
+                "+998 87 591 33 30 (09:00-18:00) или +998 97 614 77 74 (18:00-23:00)."), None, None
 
 
 # =============================================================================
@@ -446,10 +471,18 @@ async def on_business_message(message: Message):
             return
     chat_key = f"{bcid}:{message.chat.id}"
     await bot.send_chat_action(message.chat.id, "typing", business_connection_id=bcid)
-    answer, lead = await ask_ai(chat_key, message.text)
-    await message.answer(answer)
+    answer, lead, gal = await ask_ai(chat_key, message.text)
+    if answer:
+        await message.answer(answer)
+    elif gal:
+        await message.answer("Конечно! Смотрите 👇")
+    if gal and store["galleries"].get(gal):
+        await bot.send_chat_action(message.chat.id, "upload_photo",
+                                   business_connection_id=bcid)
+        await send_gallery(message.chat.id, bcid, gal)
     if lead:
-        await post_lead(lead, chat_key, guest_source(message))
+        u = message.from_user
+        await post_lead(lead, chat_key, guest_source(message), u.username if u else None)
 
 
 # =============================================================================
@@ -564,7 +597,7 @@ async def on_lead_action(cb: CallbackQuery):
 
     if action == "take":
         await cb.message.edit_text(base + f"\n🙋 В работе · {who}",
-                                   reply_markup=lead_keyboard())
+                                   reply_markup=cb.message.reply_markup)
         await cb.answer("Взято в работу")
     elif action == "confirm":
         await cb.message.edit_text(base + f"\n\n✅ ПОДТВЕРЖДЕНО · {who} · {t}")
@@ -619,14 +652,21 @@ async def on_direct_message(message: Message):
             return
     chat_key = f"direct:{message.chat.id}"
     await bot.send_chat_action(message.chat.id, "typing")
-    answer, lead = await ask_ai(chat_key, message.text)
-    await message.answer(answer)
+    answer, lead, gal = await ask_ai(chat_key, message.text)
+    if answer:
+        await message.answer(answer)
+    elif gal:
+        await message.answer("Конечно! Смотрите 👇")
+    if gal and store["galleries"].get(gal):
+        await bot.send_chat_action(message.chat.id, "upload_photo")
+        await send_gallery(message.chat.id, None, gal)
     if lead:
-        await post_lead(lead, chat_key, guest_source(message))
+        u = message.from_user
+        await post_lead(lead, chat_key, guest_source(message), u.username if u else None)
 
 
 async def main():
-    log.info("Бот запущен (v4). Останови командой Ctrl+C.")
+    log.info("Бот запущен (v5). Останови командой Ctrl+C.")
     await dp.start_polling(bot)
 
 
