@@ -1,38 +1,46 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
-#  ZARRA RESORT — Telegram AI-ассистент  (версия 3, на Groq)
+#  ZARRA RESORT — Telegram AI-ассистент  (версия 4, на Groq)
 #  Работает и при прямом общении с ботом, и при подключении к профилю
 #  (Настройки -> Автоматизация чатов).
 #
-#  ЧТО НОВОГО В v3:
-#   - Галерея фото/видео шале. Гость пишет "покажите люкс / есть фото?" —
-#     бот присылает альбом (как обычные фото/видео, не файлы).
-#   - Загрузка галереи делается прямо в Telegram: владелец отправляет боту
-#     команду /setup_lux, затем сами фото/видео, затем /stop.
-#   - Слово "менеджер" больше не используется.
+#  ЧТО НОВОГО В v4:
+#   - Заявки на бронь уходят в рабочую ГРУППУ с кнопками
+#     «✅ Подтвердить / ❌ Отклонить / 🙋 Беру в работу».
+#     При нажатии бот дописывает, кто и когда обработал заявку.
+#   - В базе знаний: предоплата 50%, условия отмены, вместимость
+#     (ночёвка vs посадочные), дни рождения и мероприятия.
 #
 #  Тебе НЕ нужно ничего здесь программировать. Менять руками можно только
 #  блок "БАЗА ЗНАНИЙ" ниже (факты про резорт). Остальное трогать не надо.
+#
+#  Как подключить группу для заявок:
+#   1) создай группу в Telegram (например, «ZARRA · Заявки на бронь»);
+#   2) добавь туда бота @zarra_resort_ai_bot и сделай его АДМИНОМ;
+#   3) в этой группе отправь команду  /setgroup  — бот её запомнит.
 # =============================================================================
 
 import os
+import re
 import json
 import asyncio
 import logging
 from pathlib import Path
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
-    Message, BusinessConnection, InputMediaPhoto, InputMediaVideo,
+    Message, BusinessConnection, CallbackQuery,
+    InputMediaPhoto, InputMediaVideo,
+    InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from groq import Groq
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
 log = logging.getLogger("zarra")
 
-# Модель ИИ на Groq (бесплатно). llama-3.3-70b-versatile — умная и многоязычная.
 MODEL = "llama-3.3-70b-versatile"
 
 
@@ -47,8 +55,9 @@ Telegram: @zarra_resort | Instagram: @zarraresort
 ТИПЫ ШАЛЕ (вилл):
 
 1) ШАЛЕ КОМФОРТ — всего 9 вилл.
-   - Спальных мест: 2
-   - Посадочных мест: 10
+   - Спальных мест: 2 — то есть С НОЧЁВКОЙ остаться могут максимум 2 человека.
+   - Посадочных мест: 10 — днём/вечером можно принять до 10 гостей,
+     но переночевать смогут только 2 (остальные — гости на время, без ночёвки).
    - Для семейного отдыха, встреч с близкими, уютных выходных на природе.
    ЦЕНЫ (будни):
    - Слот 1, с 10:00 до 17:00 — 1,5 млн сум
@@ -56,9 +65,9 @@ Telegram: @zarra_resort | Instagram: @zarraresort
    - Слот 3, ПОЛНЫЙ ДЕНЬ (Full day) с 10:00 до 09:00 — 3 млн сум
 
 2) ШАЛЕ ПРЕЗИДЕНТ ЛЮКС — всего 3 виллы.
-   - Спальных мест: 7
-   - Посадочных мест: 20
-   - Просторное премиальное шале для больших компаний, семейных мероприятий и особых событий.
+   - Спальных мест: 7 — С НОЧЁВКОЙ остаться могут до 7 человек.
+   - Посадочных мест: 20 — до 20 гостей на мероприятии/днём; ночуют до 7.
+   - Просторное премиальное шале для больших компаний и особых событий.
    ЦЕНЫ (будни):
    - Слот 1, с 10:00 до 17:00 — 3 млн сум
    - Слот 2, с 18:00 до 09:00 — 4 млн сум
@@ -67,6 +76,18 @@ Telegram: @zarra_resort | Instagram: @zarraresort
 ВАЖНО ПРО ЦЕНЫ:
 - По субботам, воскресеньям и в праздничные дни цены ВЫШЕ на 20%.
 - Все цены — в узбекских сумах (сум).
+
+МЕРОПРИЯТИЯ:
+- На территории можно проводить дни рождения и мероприятия.
+- Вместимость по посадочным местам: Комфорт — до 10 гостей, Президент Люкс — до 20.
+
+БРОНИРОВАНИЕ И ОПЛАТА:
+- Для подтверждения брони нужна предоплата 50%.
+- Отмена и возврат:
+  • если гость предупредит об отмене ЗА 3 ДНЯ И БОЛЬШЕ до даты заселения —
+    предоплату возвращаем полностью;
+  • если позже, чем за 3 дня (например, за 1 день) — предоплата НЕ возвращается (штраф).
+  • Чтобы вернуть деньги, отменить нужно минимум за 3 дня до заселения.
 
 УДОБСТВА НА ТЕРРИТОРИИ:
 - Бассейн
@@ -82,7 +103,6 @@ Telegram: @zarra_resort | Instagram: @zarraresort
 
 ДОПОЛНИТЕЛЬНО (Азамат, заполни сам, если знаешь — пока бот этого не знает):
 - Точный адрес / как добраться: (не указано)
-- Нужна ли предоплата / депозит: (не указано)
 - Можно ли с животными: (не указано)
 - Парковка: (не указано)
 - Что входит в стоимость (постельное, посуда, дрова и т.п.): (не указано)
@@ -107,20 +127,39 @@ RULES = """
   ни цен, ни скидок, ни услуг, ни свободных дат.
 - ТЫ НЕ ПОДТВЕРЖДАЕШЬ БРОНЬ и не гарантируешь, что дата свободна.
   Бронь подтверждает только наш сотрудник.
-- Если клиент готов бронировать — вежливо собери данные:
-  какое шале, дата, какой слот, сколько гостей, имя и номер телефона.
-  Затем скажи, что передашь заявку и с гостем свяжутся для подтверждения.
 - Если спрашивают то, чего НЕТ в базе знаний — не выдумывай.
   Честно скажи, что уточнишь, и дай контакты для связи.
 - Если клиент называет день недели или дату — правильно посчитай цену
   с учётом наценки +20% в субботу, воскресенье и праздники.
-- Если просят живого человека — дай контакты для связи.
+
+ПРО ВМЕСТИМОСТЬ (важно не путать):
+- "Спальных мест" — сколько человек могут ОСТАТЬСЯ НА НОЧЬ
+  (Комфорт — 2, Президент Люкс — 7).
+- "Посадочных мест" — сколько гостей можно принять днём/на мероприятии
+  (Комфорт — 10, Президент Люкс — 20).
+- Если гость хочет ночевать большим числом, чем есть спальных мест — мягко
+  поясни: с ночёвкой могут остаться столько-то, а остальные могут быть гостями
+  на время (в пределах посадочных мест).
 
 ПРО ФОТО И ВИДЕО:
-- У ассистента есть галерея фото и видео шале. Если гость интересуется,
-  как выглядит шале — предложи посмотреть фото и видео (галерея отправится
-  сама, тебе не нужно вставлять ссылки). Например: «Могу показать фото и
-  видео — какое шале интересует, Люкс или Комфорт?»
+- У ассистента есть галерея фото и видео шале. Если гость интересуется, как
+  выглядит шале — предложи посмотреть фото и видео (галерея отправится сама).
+  Например: «Могу показать фото и видео — какое шале интересует, Люкс или Комфорт?»
+
+СБОР ЗАЯВКИ НА БРОНЬ:
+- Когда гость хочет забронировать, вежливо собери данные:
+  какое шале, дата, слот, сколько гостей всего и сколько с ночёвкой,
+  повод (если есть — например, день рождения или мероприятие), имя и телефон.
+- Обязательно напомни про предоплату 50% и условия отмены
+  (возврат — только при отмене за 3 дня и более до заселения).
+- Бронь НЕ подтверждай сам — скажи, что передашь заявку и с гостем свяжутся
+  для подтверждения.
+- Когда собраны хотя бы: ШАЛЕ, ДАТА, СЛОТ, ИМЯ и ТЕЛЕФОН — добавь в САМОМ
+  КОНЦЕ ответа служебный блок СТРОГО в таком формате и больше ничего после него:
+  <lead>{"chalet":"","date":"","slot":"","guests_total":"","guests_overnight":"","occasion":"","name":"","phone":"","notes":""}</lead>
+- Этот блок служебный, гость его видеть не должен — не упоминай и не показывай его.
+  Пустые поля оставляй пустыми. Если не хватает шале/даты/слота/имени/телефона —
+  блок НЕ добавляй, а вежливо уточни недостающее.
 """
 
 SYSTEM_PROMPT = RULES + "\n\nБАЗА ЗНАНИЙ:\n" + KNOWLEDGE
@@ -131,13 +170,11 @@ SYSTEM_PROMPT = RULES + "\n\nБАЗА ЗНАНИЙ:\n" + KNOWLEDGE
 # =============================================================================
 
 def load_config() -> tuple[str, str]:
-    """Читает токен и ключ из .env. Чего не хватает — спросит один раз."""
     env_path = Path(__file__).parent / ".env"
     if env_path.exists():
         load_dotenv(env_path)
     token = os.getenv("BOT_TOKEN")
     groq_key = os.getenv("GROQ_API_KEY")
-
     if not token:
         print("\nНужен токен бота от BotFather.")
         token = input("Вставь токен бота и нажми Enter:\n> ").strip()
@@ -145,7 +182,6 @@ def load_config() -> tuple[str, str]:
         print("\nНужен бесплатный ключ Groq.")
         print("Получить: зайди на console.groq.com -> API Keys -> Create API Key.")
         groq_key = input("Вставь сюда Groq API ключ и нажми Enter:\n> ").strip()
-
     env_path.write_text(f"BOT_TOKEN={token}\nGROQ_API_KEY={groq_key}\n", encoding="utf-8")
     return token, groq_key
 
@@ -156,12 +192,11 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 ai = Groq(api_key=GROQ_API_KEY)
 
-# Память диалогов (только пока бот запущен): { ключ_чата: [ {role, text}, ... ] }
 history: dict[str, list[dict]] = {}
-# Владельцы бизнес-подключений: { connection_id: id_владельца }
-owners: dict[str, int] = {}
+owners: dict[str, int] = {}        # бизнес-подключения: connection_id -> owner_id
+last_lead: dict[str, str] = {}     # защита от повторной отправки одной заявки
 
-# --- Хранилище галереи (file_id фото/видео) — сохраняется в файл ---------------
+# --- Хранилище (галереи, владелец, группа заявок, счётчик) ---------------------
 STORE_PATH = Path(__file__).parent / "media_store.json"
 
 CAT_NAMES = {"lux": "Шале Люкс", "comfort": "Шале Комфорт", "exterior": "Территория"}
@@ -183,6 +218,8 @@ def load_store() -> dict:
     else:
         data = {}
     data.setdefault("owner_id", None)
+    data.setdefault("leads_chat_id", None)
+    data.setdefault("lead_counter", 0)
     data.setdefault("galleries", {})
     for c in ("lux", "comfort", "exterior"):
         data["galleries"].setdefault(c, [])
@@ -194,11 +231,10 @@ def save_store() -> None:
 
 
 store = load_store()
-# Кто сейчас в режиме загрузки: { user_id: "lux"/"comfort"/"exterior" }
-collecting: dict[int, str] = {}
+collecting: dict[int, str] = {}    # кто сейчас грузит галерею: user_id -> категория
 
 
-# --- Определение запроса "покажи фото/видео" ----------------------------------
+# --- Распознавание "покажи фото/видео" ----------------------------------------
 GAL_WORDS = (
     "фото", "видео", "посмотр", "покаж", "показа", "как выглядит", "галере",
     "снимк", "rasm", "surat", "video", "photo", "ko'r", "ko‘r", "look",
@@ -210,7 +246,6 @@ EXT_WORDS = ("территор", "бассейн", "снаружи", "exterior",
 
 
 def detect_gallery_request(text: str):
-    """Возвращает 'lux'/'comfort'/'exterior' / 'ask' (не уточнено) / None."""
     t = text.lower()
     if not any(w in t for w in GAL_WORDS):
         return None
@@ -229,7 +264,6 @@ def _chunks(lst, n=10):
 
 
 async def send_gallery(chat_id: int, bcid, category: str) -> bool:
-    """Отправляет фото/видео шале альбомами (как обычные медиа)."""
     items = store["galleries"].get(category, [])
     if not items:
         return False
@@ -254,8 +288,95 @@ async def send_gallery(chat_id: int, bcid, category: str) -> bool:
     return True
 
 
-async def ask_ai(chat_key: str, user_text: str) -> str:
-    """Отправляет сообщение в ИИ с учётом истории диалога и возвращает ответ."""
+# --- Заявки на бронь -----------------------------------------------------------
+LEAD_RE = re.compile(r"<lead>\s*(\{.*?\})\s*</lead>", re.DOTALL | re.IGNORECASE)
+
+
+def extract_lead(text: str):
+    """Вынимает служебный блок заявки из ответа ИИ. Возвращает (чистый_текст, заявка|None)."""
+    lead = None
+    m = LEAD_RE.search(text)
+    if m:
+        try:
+            lead = json.loads(m.group(1))
+        except Exception:
+            lead = None
+    clean = LEAD_RE.sub("", text)
+    clean = re.sub(r"</?lead>", "", clean, flags=re.IGNORECASE)  # на всякий случай
+    return clean.strip(), lead
+
+
+def lead_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data="lead:confirm"),
+         InlineKeyboardButton(text="❌ Отклонить", callback_data="lead:reject")],
+        [InlineKeyboardButton(text="🙋 Беру в работу", callback_data="lead:take")],
+    ])
+
+
+def format_lead(lead: dict, number: int, source: str) -> str:
+    def g(key):
+        v = lead.get(key)
+        v = str(v).strip() if v is not None else ""
+        return v if v and v not in ("-", "—") else None
+
+    lines = [f"🆕 НОВАЯ ЗАЯВКА #{number}", ""]
+    if g("chalet"):
+        lines.append(f"🏡 Шале: {g('chalet')}")
+    if g("date"):
+        lines.append(f"📅 Дата: {g('date')}")
+    if g("slot"):
+        lines.append(f"⏰ Слот: {g('slot')}")
+    if g("guests_total") or g("guests_overnight"):
+        gl = f"👥 Гостей: {g('guests_total') or '—'}"
+        if g("guests_overnight"):
+            gl += f" (с ночёвкой: {g('guests_overnight')})"
+        lines.append(gl)
+    if g("occasion"):
+        lines.append(f"🎉 Повод: {g('occasion')}")
+    if g("name"):
+        lines.append(f"🙍 Имя: {g('name')}")
+    if g("phone"):
+        lines.append(f"📞 Телефон: {g('phone')}")
+    if g("notes"):
+        lines.append(f"💬 Комментарий: {g('notes')}")
+    if source:
+        lines.append(f"———\n💬 Гость: {source}")
+    lines.append("\n⚠️ Бронь подтверждает сотрудник. Предоплата 50%.")
+    return "\n".join(lines)
+
+
+def guest_source(message: Message) -> str:
+    u = message.from_user
+    if not u:
+        return "—"
+    if u.username:
+        return f"@{u.username}"
+    return u.full_name or "—"
+
+
+async def post_lead(lead: dict, chat_key: str, source: str):
+    """Отправляет заявку в группу (или владельцу), с защитой от дублей."""
+    signature = json.dumps(lead, ensure_ascii=False, sort_keys=True)
+    if last_lead.get(chat_key) == signature:
+        return
+    last_lead[chat_key] = signature
+
+    dest = store.get("leads_chat_id") or store.get("owner_id")
+    if not dest:
+        return
+
+    store["lead_counter"] = int(store.get("lead_counter", 0)) + 1
+    save_store()
+    text = format_lead(lead, store["lead_counter"], source)
+    try:
+        await bot.send_message(dest, text, reply_markup=lead_keyboard())
+    except Exception as e:
+        log.warning(f"post_lead error: {e}")
+
+
+async def ask_ai(chat_key: str, user_text: str):
+    """Возвращает (ответ_гостю, заявка|None)."""
     turns = history.setdefault(chat_key, [])
     turns.append({"role": "user", "text": user_text})
     turns[:] = turns[-12:]
@@ -265,23 +386,21 @@ async def ask_ai(chat_key: str, user_text: str) -> str:
 
     def _call():
         return ai.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            temperature=0.5,
-            max_tokens=800,
+            model=MODEL, messages=messages, temperature=0.5, max_tokens=800,
         )
 
     try:
         resp = await asyncio.to_thread(_call)
-        answer = (resp.choices[0].message.content or "").strip()
-        if not answer:
+        raw = (resp.choices[0].message.content or "").strip()
+        if not raw:
             raise ValueError("пустой ответ")
+        answer, lead = extract_lead(raw)
         turns.append({"role": "assistant", "text": answer})
-        return answer
+        return answer, lead
     except Exception as e:
         log.warning(f"AI error: {e}")
         return ("Извините, я сейчас не могу ответить. Пожалуйста, свяжитесь с нами: "
-                "+998 87 591 33 30 (09:00-18:00) или +998 97 614 77 74 (18:00-23:00).")
+                "+998 87 591 33 30 (09:00-18:00) или +998 97 614 77 74 (18:00-23:00)."), None
 
 
 # =============================================================================
@@ -310,7 +429,6 @@ async def is_owner_message(message: Message) -> bool:
 
 @dp.business_message()
 async def on_business_message(message: Message):
-    """Сообщение от клиента в чате подключённого профиля (реальный режим)."""
     if await is_owner_message(message):
         return
     if not message.text:
@@ -328,15 +446,19 @@ async def on_business_message(message: Message):
             return
     chat_key = f"{bcid}:{message.chat.id}"
     await bot.send_chat_action(message.chat.id, "typing", business_connection_id=bcid)
-    answer = await ask_ai(chat_key, message.text)
+    answer, lead = await ask_ai(chat_key, message.text)
     await message.answer(answer)
+    if lead:
+        await post_lead(lead, chat_key, guest_source(message))
 
 
 # =============================================================================
-#  КОМАНДЫ (работают в личном чате с ботом)
+#  КОМАНДЫ
 # =============================================================================
 @dp.message(CommandStart())
 async def on_start(message: Message):
+    if message.chat.type != "private":
+        return
     await message.answer(
         "Assalomu alaykum! Welcome to ZARRA HOTEL & RESORT.\n\n"
         "Здравствуйте! Я ассистент резорта. Спросите про шале, цены, "
@@ -347,11 +469,24 @@ async def on_start(message: Message):
 
 @dp.message(Command("myid"))
 async def cmd_myid(message: Message):
-    await message.answer(f"Ваш Telegram ID: {message.from_user.id}")
+    await message.answer(f"Ваш Telegram ID: {message.from_user.id}\n"
+                         f"ID этого чата: {message.chat.id}")
+
+
+@dp.message(Command("setgroup"))
+async def cmd_setgroup(message: Message):
+    if message.chat.type not in ("group", "supergroup"):
+        await message.answer("Эту команду нужно отправить В ГРУППЕ, куда слать заявки.")
+        return
+    owner = store.get("owner_id")
+    if owner and message.from_user and message.from_user.id != owner:
+        return
+    store["leads_chat_id"] = message.chat.id
+    save_store()
+    await message.answer("✅ Готово! Заявки на бронь будут приходить в эту группу.")
 
 
 def _start_setup(message: Message, cat: str) -> bool:
-    """Включает режим загрузки для категории. Первый запустивший — владелец."""
     uid = message.from_user.id
     if store.get("owner_id") is None:
         store["owner_id"] = uid
@@ -364,6 +499,8 @@ def _start_setup(message: Message, cat: str) -> bool:
 
 
 async def _setup(message: Message, cat: str):
+    if message.chat.type != "private":
+        return
     if not _start_setup(message, cat):
         await message.answer("⛔️ Эта команда доступна только владельцу.")
         return
@@ -408,7 +545,35 @@ async def cmd_media_status(message: Message):
         return
     lines = [f"• {CAT_NAMES[c]}: {len(store['galleries'].get(c, []))}"
              for c in ("lux", "comfort", "exterior")]
-    await message.answer("📊 Загружено материалов:\n" + "\n".join(lines))
+    grp = store.get("leads_chat_id")
+    lines.append(f"• Группа заявок: {'подключена' if grp else 'не подключена'}")
+    await message.answer("📊 Статус:\n" + "\n".join(lines))
+
+
+# =============================================================================
+#  КНОПКИ ПОД ЗАЯВКОЙ (нажатия в группе)
+# =============================================================================
+@dp.callback_query(F.data.startswith("lead:"))
+async def on_lead_action(cb: CallbackQuery):
+    action = cb.data.split(":", 1)[1]
+    who = cb.from_user.full_name
+    if cb.from_user.username:
+        who += f" (@{cb.from_user.username})"
+    t = (datetime.utcnow() + timedelta(hours=5)).strftime("%d.%m %H:%M")
+    base = cb.message.text or ""
+
+    if action == "take":
+        await cb.message.edit_text(base + f"\n🙋 В работе · {who}",
+                                   reply_markup=lead_keyboard())
+        await cb.answer("Взято в работу")
+    elif action == "confirm":
+        await cb.message.edit_text(base + f"\n\n✅ ПОДТВЕРЖДЕНО · {who} · {t}")
+        await cb.answer("Подтверждено ✅")
+    elif action == "reject":
+        await cb.message.edit_text(base + f"\n\n❌ ОТКЛОНЕНО · {who} · {t}")
+        await cb.answer("Отклонено")
+    else:
+        await cb.answer()
 
 
 # =============================================================================
@@ -416,10 +581,12 @@ async def cmd_media_status(message: Message):
 # =============================================================================
 @dp.message(F.photo | F.video | F.document)
 async def on_owner_media(message: Message):
+    if message.chat.type != "private":
+        return
     uid = message.from_user.id if message.from_user else None
     cat = collecting.get(uid)
     if not cat:
-        return  # не в режиме загрузки — игнорируем медиа
+        return
     if message.photo:
         store["galleries"][cat].append({"t": "photo", "id": message.photo[-1].file_id})
     elif message.video:
@@ -437,6 +604,8 @@ async def on_owner_media(message: Message):
 # =============================================================================
 @dp.message()
 async def on_direct_message(message: Message):
+    if message.chat.type != "private":
+        return
     if not message.text:
         return
     g = detect_gallery_request(message.text)
@@ -450,12 +619,14 @@ async def on_direct_message(message: Message):
             return
     chat_key = f"direct:{message.chat.id}"
     await bot.send_chat_action(message.chat.id, "typing")
-    answer = await ask_ai(chat_key, message.text)
+    answer, lead = await ask_ai(chat_key, message.text)
     await message.answer(answer)
+    if lead:
+        await post_lead(lead, chat_key, guest_source(message))
 
 
 async def main():
-    log.info("Бот запущен (v3). Останови командой Ctrl+C.")
+    log.info("Бот запущен (v4). Останови командой Ctrl+C.")
     await dp.start_polling(bot)
 
 
