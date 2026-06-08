@@ -133,9 +133,13 @@ RULES = """
 - ТЫ НЕ ПОДТВЕРЖДАЕШЬ БРОНЬ. Бронь подтверждает только наш сотрудник.
 - Если спрашивают то, чего НЕТ в базе знаний — честно скажи, что уточнишь,
   и дай контакты для связи.
-- В начале тебе сообщают текущие день недели, дату и время. Опирайся на них:
-  если сегодня суббота, воскресенье или праздник — цена +20%. Не путай
-  утро/день/вечер и не выдумывай, какой сейчас день.
+- В начале тебе сообщают текущие день недели, дату и время — опирайся на них,
+  не путай утро/день/вечер и не выдумывай, какой сейчас день.
+- Наценка +20% применяется ТОЛЬКО когда ДАТА брони — суббота, воскресенье или
+  официальный праздничный день. Будний день (пн–пт) — без наценки.
+- ВАЖНО: «повод» гостя (праздник, день рождения, свадьба и т.п.) — это просто
+  причина брони, на цену он НЕ влияет. Не путай «повод — праздник» с тем,
+  что дата выпадает на праздничный день.
 
 ПРО ВМЕСТИМОСТЬ (не путать):
 - "Спальных мест" — сколько могут ОСТАТЬСЯ НА НОЧЬ (Комфорт 2, Люкс 7).
@@ -147,11 +151,13 @@ RULES = """
    Не пиши «отправляю/загружается», не описывай фото — они придут сами.
    Перед тегом достаточно короткой фразы: «Конечно! Смотрите 👇».
 2) ЗАЯВКА НА БРОНЬ: собери шале, дату, слот, сколько гостей всего и с ночёвкой,
-   повод (если есть), имя и телефон. Напомни про предоплату 50% и условия
-   отмены (возврат — за 3+ дня). Бронь не подтверждай. Когда собраны хотя бы
+   повод (если есть), имя и телефон. Бронь НЕ подтверждай и оплатой НЕ занимайся:
+   не считай сумму предоплаты, не проси перевести деньги и не объясняй, куда
+   платить — этим займётся живой сотрудник. Когда собраны хотя бы
    ШАЛЕ, ДАТА, СЛОТ, ИМЯ и ТЕЛЕФОН — добавь в конце ответа тег:
    <lead>{"chalet":"","date":"","slot":"","guests_total":"","guests_overnight":"","occasion":"","name":"","phone":"","notes":""}</lead>
-   Если данных мало — тег не добавляй, вежливо уточни.
+   и коротко скажи гостю: заявку передал нашему сотруднику, он скоро свяжется
+   для подтверждения. Если данных мало — тег не добавляй, вежливо уточни.
 3) НУЖЕН ЧЕЛОВЕК: если гость просит живого сотрудника, недоволен, жалуется
    или вопрос срочный/нестандартный — добавь тег <human/>. При этом сам
    вежливо ответь и дай контакты для связи.
@@ -409,6 +415,17 @@ def lead_keyboard(username: str | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def links_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📸 Instagram",
+                              url="https://instagram.com/zarraresort"),
+         InlineKeyboardButton(text="📢 Канал",
+                              url="https://t.me/zarraresort")],
+        [InlineKeyboardButton(text="📍 Локация",
+                              url="https://maps.app.goo.gl/V8U9eX28Fuzgoshy9")],
+    ])
+
+
 def format_lead(lead: dict, number: int, source: str) -> str:
     def g(key):
         v = lead.get(key)
@@ -582,7 +599,7 @@ async def on_business_message(message: Message):
     await bot.send_chat_action(message.chat.id, "typing", business_connection_id=bcid)
     answer, lead, gal, need_human = await ask_ai(chat_key, text)
     if answer:
-        await message.answer(answer)
+        await message.answer(answer, reply_markup=links_keyboard())
     elif gal:
         await message.answer("Конечно! Смотрите 👇")
     if gal and store["galleries"].get(gal):
@@ -923,7 +940,7 @@ async def on_direct_message(message: Message):
     await bot.send_chat_action(message.chat.id, "typing")
     answer, lead, gal, need_human = await ask_ai(chat_key, text)
     if answer:
-        await message.answer(answer)
+        await message.answer(answer, reply_markup=links_keyboard())
     elif gal:
         await message.answer("Конечно! Смотрите 👇")
     if gal and store["galleries"].get(gal):
