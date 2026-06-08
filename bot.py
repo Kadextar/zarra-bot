@@ -31,6 +31,7 @@ import logging
 import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
+from collections import Counter
 
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
@@ -262,6 +263,8 @@ def load_store() -> dict:
     data.setdefault("galleries", {})
     for c in ("lux", "comfort", "exterior", "menu"):
         data["galleries"].setdefault(c, [])
+    data.setdefault("chats", {})   # follow-up: {chat_key: {chat_id, bcid, is_business, last_ts, last_day, has_lead, followed_up}}
+    data.setdefault("daily", {})   # аналитика: {"YYYY-MM-DD": {"inq": N}}
     return data
 
 
@@ -491,6 +494,9 @@ async def post_lead(lead: dict, chat_key: str, source: str, username: str | None
         "chat_id": sent.chat.id, "message_id": sent.message_id,
         "source": source, "data": lead,
     })
+    c = store.setdefault("chats", {}).get(chat_key)
+    if c:
+        c["has_lead"] = True
     save_store()
 
 
@@ -634,6 +640,8 @@ async def on_business_message(message: Message):
             return
 
     chat_key = f"{bcid}:{message.chat.id}"
+    track_inquiry(chat_key, message.chat.id, True, bcid,
+                  message.from_user.id if message.from_user else None)
     await bot.send_chat_action(message.chat.id, "typing", business_connection_id=bcid)
     answer, lead, gal, need_human = await ask_ai(chat_key, text)
     if answer:
@@ -767,6 +775,39 @@ async def cmd_set_address(message: Message):
     store["location"] = loc
     save_store()
     await message.answer(f"✅ Адрес сохранён:\n{addr}")
+
+
+@dp.message(Command("report"))
+async def cmd_report(message: Message):
+    if not _is_owner(message):
+        return
+    now = tashkent_now()
+    leads = store.get("leads", [])
+    daily = store.get("daily", {})
+    today = now.strftime("%Y-%m-%d")
+    days7 = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)}
+
+    inq_today = daily.get(today, {}).get("inq", 0)
+    leads_today = [l for l in leads if l.get("day") == today]
+    inq7 = sum(daily.get(d, {}).get("inq", 0) for d in days7)
+    leads7 = [l for l in leads if l.get("day") in days7]
+    conf7 = sum(1 for l in leads7 if l.get("status") == "confirmed")
+    conv = round(100 * len(leads7) / inq7) if inq7 else 0
+
+    ch = Counter((l.get("data") or {}).get("chalet", "") for l in leads7
+                 if (l.get("data") or {}).get("chalet"))
+    top_ch = ch.most_common(1)[0][0] if ch else "—"
+
+    await message.answer(
+        "📊 Отчёт\n\n"
+        f"Сегодня: обращений {inq_today}, заявок {len(leads_today)}\n\n"
+        "За 7 дней:\n"
+        f"• Обращений: {inq7}\n"
+        f"• Заявок: {len(leads7)}\n"
+        f"• Подтверждено: {conf7}\n"
+        f"• Конверсия (заявки/обращения): {conv}%\n"
+        f"• Чаще спрашивают: {top_ch}"
+    )
 
 
 @dp.message(Command("media_status"))
@@ -984,6 +1025,8 @@ async def on_direct_message(message: Message):
 
     # Иначе — ИИ
     chat_key = f"direct:{message.chat.id}"
+    track_inquiry(chat_key, message.chat.id, False, None,
+                  message.from_user.id if message.from_user else None)
     await bot.send_chat_action(message.chat.id, "typing")
     answer, lead, gal, need_human = await ask_ai(chat_key, text)
     if answer:
@@ -1000,17 +1043,125 @@ async def on_direct_message(message: Message):
         await alert_human(guest_source(message), text)
 
 
+# =============================================================================
+#  АНАЛИТИКА И FOLLOW-UP (фон)
+# =============================================================================
+FOLLOWUP_ENABLED = True            # авто-напоминание гостям без заявки (off -> False)
+FOLLOWUP_MIN_HOURS = 3             # писать не раньше, чем через столько часов
+FOLLOWUP_MAX_HOURS = 48            # и не позже
+
+
+def track_inquiry(chat_key: str, chat_id: int, is_business: bool, bcid, uid) -> None:
+    """Запоминает диалог гостя для аналитики и follow-up. Владельца не трогаем."""
+    if uid and uid == store.get("owner_id"):
+        return
+    now = tashkent_now()
+    day = now.strftime("%Y-%m-%d")
+    chats = store.setdefault("chats", {})
+    c = chats.get(chat_key) or {}
+    first_today = c.get("last_day") != day
+    c.update({
+        "chat_id": chat_id, "is_business": is_business, "bcid": bcid,
+        "last_ts": now.strftime("%Y-%m-%d %H:%M"), "last_day": day,
+    })
+    c.setdefault("has_lead", False)
+    c.setdefault("followed_up", False)
+    chats[chat_key] = c
+    if first_today:
+        d = store.setdefault("daily", {}).setdefault(day, {"inq": 0})
+        d["inq"] = d.get("inq", 0) + 1
+    save_store()
+
+
+async def send_followup(c: dict) -> bool:
+    text = ("Здравствуйте! 🙂 Вы недавно интересовались отдыхом в Zarra Resort & SPA. "
+            "Подсказать что-то ещё или придержать удобную дату? Будем рады помочь.")
+    try:
+        if c.get("is_business") and c.get("bcid"):
+            await bot.send_message(c["chat_id"], text,
+                                   business_connection_id=c["bcid"],
+                                   reply_markup=links_keyboard())
+        else:
+            await bot.send_message(c["chat_id"], text, reply_markup=links_keyboard())
+        return True
+    except Exception as e:
+        log.warning(f"followup send error: {e}")
+        return False
+
+
+async def run_followups() -> None:
+    """Один раз пишет гостям, кто общался, но не оставил заявку (только в рабочее время)."""
+    if not FOLLOWUP_ENABLED or not is_working_hours():
+        return
+    now = tashkent_now()
+    changed = False
+    for c in list(store.get("chats", {}).values()):
+        if c.get("has_lead") or c.get("followed_up") or not c.get("last_ts"):
+            continue
+        try:
+            last_dt = datetime.strptime(c["last_ts"], "%Y-%m-%d %H:%M")
+        except Exception:
+            continue
+        hours = (now - last_dt).total_seconds() / 3600
+        if not (FOLLOWUP_MIN_HOURS <= hours <= FOLLOWUP_MAX_HOURS):
+            continue
+        if await send_followup(c):
+            c["followed_up"] = True
+            changed = True
+            await asyncio.sleep(1)   # бережём лимиты Telegram
+    if changed:
+        save_store()
+
+
+async def send_daily_digest() -> None:
+    """Утренняя сводка за вчера — лично владельцу."""
+    dest = store.get("owner_id")
+    if not dest:
+        return
+    y = (tashkent_now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    inq = store.get("daily", {}).get(y, {}).get("inq", 0)
+    ld = [l for l in store.get("leads", []) if l.get("day") == y]
+    conf = sum(1 for l in ld if l.get("status") == "confirmed")
+    conv = round(100 * len(ld) / inq) if inq else 0
+    try:
+        await bot.send_message(
+            dest,
+            f"☀️ Сводка за вчера ({y})\n\n"
+            f"• Обращений: {inq}\n• Заявок: {len(ld)}\n"
+            f"• Подтверждено: {conf}\n• Конверсия: {conv}%"
+        )
+    except Exception as e:
+        log.warning(f"digest error: {e}")
+
+
+async def scheduler() -> None:
+    last_digest_day = None
+    while True:
+        try:
+            now = tashkent_now()
+            await run_followups()
+            day = now.strftime("%Y-%m-%d")
+            if now.hour == 9 and last_digest_day != day:
+                await send_daily_digest()
+                last_digest_day = day
+        except Exception as e:
+            log.warning(f"scheduler error: {e}")
+        await asyncio.sleep(900)   # каждые 15 минут
+
+
 async def main():
     try:
         await bot.set_my_commands([
             BotCommand(command="start", description="Главное меню"),
             BotCommand(command="stats", description="Статистика заявок (для своих)"),
+            BotCommand(command="report", description="Отчёт и конверсия (для своих)"),
             BotCommand(command="export", description="Выгрузить заявки (для своих)"),
             BotCommand(command="media_status", description="Что загружено (для своих)"),
         ])
     except Exception as e:
         log.warning(f"set_my_commands: {e}")
-    log.info("Бот запущен (v6). Останови командой Ctrl+C.")
+    asyncio.create_task(scheduler())
+    log.info("Бот запущен (v7). Останови командой Ctrl+C.")
     await dp.start_polling(bot)
 
 
