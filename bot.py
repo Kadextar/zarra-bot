@@ -152,12 +152,16 @@ RULES = """
    Перед тегом достаточно короткой фразы: «Конечно! Смотрите 👇».
 2) ЗАЯВКА НА БРОНЬ: собери шале, дату, слот, сколько гостей всего и с ночёвкой,
    повод (если есть), имя и телефон. Бронь НЕ подтверждай и оплатой НЕ занимайся:
-   не считай сумму предоплаты, не проси перевести деньги и не объясняй, куда
-   платить — этим займётся живой сотрудник. Когда собраны хотя бы
-   ШАЛЕ, ДАТА, СЛОТ, ИМЯ и ТЕЛЕФОН — добавь в конце ответа тег:
+   не считай предоплату, не проси перевести деньги, не объясняй, куда платить —
+   этим займётся живой сотрудник.
+   КАК ТОЛЬКО собраны 5 обязательных полей (ШАЛЕ, ДАТА, СЛОТ, ИМЯ, ТЕЛЕФОН), ты
+   ОБЯЗАН в самом конце ответа отдельной строкой поставить тег заявки. Без этого
+   тега заявка НЕ уйдёт сотруднику, поэтому говорить «передал заявку» без тега
+   НЕЛЬЗЯ. Формат (заполни поля собранными данными, лишнее оставь пустым):
    <lead>{"chalet":"","date":"","slot":"","guests_total":"","guests_overnight":"","occasion":"","name":"","phone":"","notes":""}</lead>
-   и коротко скажи гостю: заявку передал нашему сотруднику, он скоро свяжется
-   для подтверждения. Если данных мало — тег не добавляй, вежливо уточни.
+   Только ВМЕСТЕ с этим тегом скажи гостю: «Заявку передал нашему сотруднику, он
+   скоро свяжется для подтверждения». Если хотя бы одного из 5 полей нет — тег НЕ
+   ставь и не пиши, что передал; вежливо уточни недостающее.
 3) НУЖЕН ЧЕЛОВЕК: если гость просит живого сотрудника, недоволен, жалуется
    или вопрос срочный/нестандартный — добавь тег <human/>. При этом сам
    вежливо ответь и дай контакты для связи.
@@ -547,6 +551,31 @@ async def ask_ai(chat_key: str, user_text: str):
                 ), None, None, False
 
 
+async def transcribe_voice(file_id: str) -> str | None:
+    """Скачивает голосовое и распознаёт текст через Groq Whisper (любой язык)."""
+    try:
+        f = await bot.get_file(file_id)
+        dest = Path(tempfile.gettempdir()) / f"voice_{f.file_unique_id}.ogg"
+        await bot.download_file(f.file_path, destination=dest)
+
+        def _tr():
+            with open(dest, "rb") as audio:
+                return ai.audio.transcriptions.create(
+                    file=(dest.name, audio.read()),
+                    model="whisper-large-v3",
+                )
+        result = await asyncio.to_thread(_tr)
+        try:
+            dest.unlink()
+        except Exception:
+            pass
+        text = (getattr(result, "text", "") or "").strip()
+        return text or None
+    except Exception as e:
+        log.warning(f"transcribe error: {e}")
+        return None
+
+
 # =============================================================================
 #  БИЗНЕС-РЕЖИМ (бот отвечает от имени профиля)
 # =============================================================================
@@ -575,10 +604,19 @@ async def is_owner_message(message: Message) -> bool:
 async def on_business_message(message: Message):
     if await is_owner_message(message):
         return
-    if not message.text:
-        return
     bcid = message.business_connection_id
-    text = message.text
+    if message.voice or message.audio:
+        await bot.send_chat_action(message.chat.id, "typing",
+                                   business_connection_id=bcid)
+        text = await transcribe_voice((message.voice or message.audio).file_id)
+        if not text:
+            await message.answer("Извините, голосовое не разобрал 🙈 "
+                                 "Напишите, пожалуйста, текстом.")
+            return
+    elif message.text:
+        text = message.text
+    else:
+        return
 
     if detect_location_request(text):
         await send_location_card(message.chat.id, bcid)
@@ -892,9 +930,18 @@ MENU_CONTACT = "💬 Связаться"
 async def on_direct_message(message: Message):
     if message.chat.type != "private":
         return
-    if not message.text:
+    if message.voice or message.audio:
+        await bot.send_chat_action(message.chat.id, "typing")
+        text = await transcribe_voice((message.voice or message.audio).file_id)
+        if not text:
+            await message.answer("Извините, голосовое не разобрал 🙈 "
+                                 "Напишите, пожалуйста, текстом.")
+            return
+        text = text.strip()
+    elif message.text:
+        text = message.text.strip()
+    else:
         return
-    text = message.text.strip()
 
     # Кнопки нижнего меню
     if text == MENU_PRICES:
