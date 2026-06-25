@@ -1,0 +1,24 @@
+[Unit]
+Description=Zarra Resort Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ⬇️ ЗАМЕНИ под свой сервер:
+#   User      — пользователь Linux (например ubuntu или opc на Oracle)
+#   WorkingDirectory и ExecStart — путь к папке zarra_bot на сервере
+User=ubuntu
+WorkingDirectory=/home/ubuntu/zarra_bot
+ExecStart=/home/ubuntu/zarra_bot/venv/bin/python /home/ubuntu/zarra_bot/bot.py
+
+# Автоперезапуск при любом падении
+Restart=always
+RestartSec=5
+
+# Логи увидишь через journalctl
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
