@@ -196,6 +196,30 @@ RULES = """
 SYSTEM_PROMPT = RULES + "\n\nБАЗА ЗНАНИЙ:\n" + KNOWLEDGE
 
 
+# Персона для ГРУППОВОГО чата — тёплый, живой «хозяин» резорта, который
+# поддерживает беседу. Отвечает, только когда к нему обратились.
+GROUP_RULES = """
+Ты — Zarra, дружелюбный и остроумный ассистент-«хозяин» резорта Zarra Resort & SPA.
+Ты участник этого группового чата и общаешься с людьми по-приятельски.
+
+КАК ОБЩАТЬСЯ:
+- Тепло, живо, по-человечески, с лёгким юмором в меру. Коротко — 1–3 предложения.
+- Определи язык собеседника и ответь на нём (русский, узбекский, английский).
+- Без markdown и спецсимволов (* _ # `). Эмодзи можно, в меру (1–2).
+- Поддерживай беседу: можно поболтать на общие темы, дать дружеский совет
+  (про отдых, досуг, как круто провести выходные, природу и т.п.).
+
+ГЛАВНОЕ:
+- Про резорт говори ТОЛЬКО факты из базы знаний. Цены и условия не выдумывай.
+- Бронированием в чате НЕ занимайся и заявки не собирай. Если кто-то хочет
+  забронировать — по-доброму предложи написать боту в личку и нажать
+  «Забронировать» (или связаться: @zarra_resort).
+- Не упоминай, что ты ИИ или языковая модель. Не пиши служебных тегов.
+- Если вопрос не про резорт — просто дружелюбно поддержи разговор и помоги.
+"""
+GROUP_SYSTEM = GROUP_RULES + "\n\nБАЗА ЗНАНИЙ:\n" + KNOWLEDGE
+
+
 # --- Готовые тексты для кнопок (3 языка) ---------------------------------------
 PRICES_TEXT = {
     "ru": (
@@ -305,11 +329,29 @@ ai = Groq(api_key=GROQ_API_KEY)
 history: dict[str, list[dict]] = {}
 owners: dict[str, int] = {}
 last_lead: dict[str, str] = {}
+group_history: dict[int, list[dict]] = {}   # болтовня в группах
+BOT_ID: int | None = None                   # заполняется при старте
+BOT_USERNAME: str | None = None
 
 # Анти-спам: не больше RATE_MAX сообщений за RATE_WINDOW секунд от одного чата.
 _msg_times: dict[int, deque] = {}
 RATE_MAX = 15
 RATE_WINDOW = 60
+# Отдельный, более мягкий лимит на ответы бота в группе (чтобы не флудил).
+_group_times: dict[int, deque] = {}
+GROUP_RATE_MAX = 8
+GROUP_RATE_WINDOW = 60
+
+
+def _group_throttled(chat_id: int) -> bool:
+    now = time.monotonic()
+    dq = _group_times.setdefault(chat_id, deque())
+    while dq and now - dq[0] > GROUP_RATE_WINDOW:
+        dq.popleft()
+    if len(dq) >= GROUP_RATE_MAX:
+        return True
+    dq.append(now)
+    return False
 
 
 def is_rate_limited(chat_id: int) -> bool:
@@ -1088,6 +1130,31 @@ async def alert_human(chat_key: str, source: str, last_text: str):
     save_store()
 
 
+async def ask_group_ai(chat_id: int, user_text: str, user_name: str):
+    """Болтовня в группе от лица «хозяина» резорта. Возвращает текст или None."""
+    turns = group_history.setdefault(chat_id, [])
+    turns.append({"role": "user", "content": f"{user_name}: {user_text}"})
+    turns[:] = turns[-10:]
+    messages = [{"role": "system", "content": GROUP_SYSTEM}] + turns
+
+    def _call():
+        return ai.chat.completions.create(
+            model=MODEL, messages=messages, temperature=0.7, max_tokens=400)
+
+    try:
+        resp = await asyncio.to_thread(_call)
+        raw = (resp.choices[0].message.content or "").strip()
+        clean, *_ = extract_controls(raw)   # на всякий случай убираем служебные теги
+        clean = clean.strip()
+        if not clean:
+            return None
+        turns.append({"role": "assistant", "content": clean})
+        return clean
+    except Exception as e:
+        log.warning(f"group AI error: {e}")
+        return None
+
+
 async def ask_ai(chat_key: str, user_text: str, lang: str = "ru"):
     """Возвращает (ответ, заявка|None, галерея|None, нужен_человек)."""
     turns = history.setdefault(chat_key, [])
@@ -1690,15 +1757,9 @@ async def on_relay_end(cb: CallbackQuery):
 
 
 # =============================================================================
-#  ГРУППА ЗАЯВОК: менеджер отвечает reply на карточку/сообщение гостя -> гостю
+#  ГРУППА: 1) реле «менеджер reply -> гостю»; 2) болтовня, когда к боту обратились
 # =============================================================================
-@dp.message(F.chat.type.in_({"group", "supergroup"}))
-async def on_group_relay(message: Message):
-    if not message.reply_to_message:
-        return
-    chat_key = store.get("relay_map", {}).get(str(message.reply_to_message.message_id))
-    if not chat_key:
-        return
+async def _do_relay(message: Message, chat_key: str) -> None:
     text = message.text or message.caption
     if not text or text.startswith("/"):
         return
@@ -1721,6 +1782,41 @@ async def on_group_relay(message: Message):
         "Когда закончите — нажмите «Завершить диалог».", reply_markup=relay_end_kb())
     map_relay(sent.message_id, chat_key)
     save_store()
+
+
+def _bot_addressed(message: Message, text: str) -> bool:
+    """Обратились ли к боту: упоминание @ник или ответ на сообщение бота."""
+    if BOT_USERNAME and f"@{BOT_USERNAME}".lower() in text.lower():
+        return True
+    r = message.reply_to_message
+    if r and r.from_user and BOT_ID and r.from_user.id == BOT_ID:
+        return True
+    return False
+
+
+@dp.message(F.chat.type.in_({"group", "supergroup"}))
+async def on_group_message(message: Message):
+    # 1) Реле: ответ на карточку заявки / сообщение гостя -> уходит гостю.
+    if message.reply_to_message:
+        chat_key = store.get("relay_map", {}).get(str(message.reply_to_message.message_id))
+        if chat_key:
+            await _do_relay(message, chat_key)
+            return
+
+    # 2) Болтовня: только если к боту обратились (упоминание или ответ ему).
+    text = message.text or message.caption
+    if not text or text.startswith("/"):
+        return
+    if not _bot_addressed(message, text):
+        return
+    if _group_throttled(message.chat.id):
+        return
+    q = text.replace(f"@{BOT_USERNAME}", "").strip() if BOT_USERNAME else text
+    name = (message.from_user.first_name if message.from_user else None) or "Гость"
+    await bot.send_chat_action(message.chat.id, "typing")
+    answer = await ask_group_ai(message.chat.id, q, name)
+    if answer:
+        await message.reply(answer)
 
 
 # =============================================================================
@@ -2450,9 +2546,16 @@ async def apply_commands() -> None:
 
 
 async def main():
+    global BOT_ID, BOT_USERNAME
+    try:
+        me = await bot.get_me()
+        BOT_ID, BOT_USERNAME = me.id, me.username
+        log.info(f"Я @{BOT_USERNAME} (id {BOT_ID})")
+    except Exception as e:
+        log.warning(f"get_me: {e}")
     await apply_commands()
     asyncio.create_task(scheduler())
-    log.info("Бот запущен (v7). Останови командой Ctrl+C.")
+    log.info("Бот запущен (v8). Останови командой Ctrl+C.")
     await dp.start_polling(bot)
 
 
