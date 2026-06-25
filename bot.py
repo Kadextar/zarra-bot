@@ -1130,11 +1130,19 @@ async def alert_human(chat_key: str, source: str, last_text: str):
     save_store()
 
 
-async def ask_group_ai(chat_id: int, user_text: str, user_name: str):
-    """Болтовня в группе от лица «хозяина» резорта. Возвращает текст или None."""
+GROUP_MEMORY = 30   # сколько последних реплик чата помнит бот для контекста
+
+
+def record_group_msg(chat_id: int, user_name: str, text: str) -> None:
+    """Тихо запоминает реплику чата (для контекста), НЕ отвечая на неё."""
     turns = group_history.setdefault(chat_id, [])
-    turns.append({"role": "user", "content": f"{user_name}: {user_text}"})
-    turns[:] = turns[-10:]
+    turns.append({"role": "user", "content": f"{user_name}: {text}"})
+    turns[:] = turns[-GROUP_MEMORY:]
+
+
+async def respond_group(chat_id: int):
+    """Отвечает «хозяином» резорта, опираясь на ВСЮ запомненную беседу."""
+    turns = group_history.get(chat_id, [])
     messages = [{"role": "system", "content": GROUP_SYSTEM}] + turns
 
     def _call():
@@ -1148,7 +1156,7 @@ async def ask_group_ai(chat_id: int, user_text: str, user_name: str):
         clean = clean.strip()
         if not clean:
             return None
-        turns.append({"role": "assistant", "content": clean})
+        group_history.setdefault(chat_id, []).append({"role": "assistant", "content": clean})
         return clean
     except Exception as e:
         log.warning(f"group AI error: {e}")
@@ -1803,18 +1811,23 @@ async def on_group_message(message: Message):
             await _do_relay(message, chat_key)
             return
 
-    # 2) Болтовня: только если к боту обратились (упоминание или ответ ему).
     text = message.text or message.caption
     if not text or text.startswith("/"):
         return
+
+    # 2) Тихо запоминаем КАЖДУЮ реплику чата (если приватность в BotFather
+    #    отключена — сюда приходят все сообщения). Так бот «в курсе беседы».
+    name = (message.from_user.first_name if message.from_user else None) or "Гость"
+    clean_text = text.replace(f"@{BOT_USERNAME}", "").strip() if BOT_USERNAME else text
+    record_group_msg(message.chat.id, name, clean_text)
+
+    # 3) Отвечаем ТОЛЬКО когда к боту обратились — но с учётом всей беседы.
     if not _bot_addressed(message, text):
         return
     if _group_throttled(message.chat.id):
         return
-    q = text.replace(f"@{BOT_USERNAME}", "").strip() if BOT_USERNAME else text
-    name = (message.from_user.first_name if message.from_user else None) or "Гость"
     await bot.send_chat_action(message.chat.id, "typing")
-    answer = await ask_group_ai(message.chat.id, q, name)
+    answer = await respond_group(message.chat.id)
     if answer:
         await message.reply(answer)
 
