@@ -1,4 +1,19 @@
-venv/
+# Секреты — НИКОГДА не коммитить
 .env
+*.key
+
+# Данные бота (заявки, галереи, настройки) и бэкапы
+media_store.json
+media_store.tmp
+backups/
+
+# Python
+venv/
 __pycache__/
 *.pyc
+
+# macOS
+.DS_Store
+
+# Локальные настройки редактора/инструментов
+.claude/

@@ -510,11 +510,7 @@ def capture_admin(message: Message) -> bool:
     return changed
 
 
-# Одноразовый посев гендиректора как администратора.
-if not store.get("_seeded_admins"):
-    add_admin_username("Iso_Ixtiyorovich")
-    store["_seeded_admins"] = True
-    save_store()
+# Администраторы добавляются вручную командой /add_admin @username.
 
 # --- Бэкапы базы (заявки/галереи) ----------------------------------------------
 BACKUP_DIR = Path(__file__).parent / "backups"
@@ -1365,24 +1361,81 @@ async def on_business_message(message: Message):
 # =============================================================================
 #  КОМАНДЫ
 # =============================================================================
+async def _start_from_web(message: Message, state: FSMContext,
+                          payload: str, lang: str) -> bool:
+    """Deep-link брони с сайта: w-<chalet>-<slot>-<ГГГГММДД>.
+    Заполняет мастер выбранными на сайте полями и перескакивает вперёд."""
+    parts = payload.split("-")
+    if len(parts) < 4:
+        return False
+    villa, slot_word, datestr = parts[1], parts[2], parts[3]
+    chalet = villa if villa in ("comfort", "lux") else None
+    slot_no = {"day": "1", "night": "2", "full": "3"}.get(slot_word)
+    if not chalet or not slot_no:
+        return False
+
+    await state.clear()
+    data = {"lang": lang, "chalet": chalet,
+            "slot": SLOT_LABELS_L[slot_no]["ru"],
+            "slot_disp": SLOT_LABELS_L[slot_no][lang],
+            "slot_no": slot_no}
+    iso = ""
+    if datestr.isdigit() and len(datestr) == 8:
+        try:
+            d = datetime.strptime(datestr, "%Y%m%d")
+            iso = d.strftime("%Y-%m-%d")
+            data.update(date=fmt_date_human(iso, "ru"),
+                        date_disp=fmt_date_human(iso, lang),
+                        date_iso=iso)
+        except ValueError:
+            iso = ""
+    await state.update_data(**data)
+
+    intro = {"ru": "👋 Заявка с сайта. Давайте оформим бронь:",
+             "uz": "👋 Saytdan ariza. Keling, bronni rasmiylashtiramiz:",
+             "en": "👋 Request from the website. Let's complete your booking:"}[lang]
+    picked = f"🏡 {CHALET_SHORT[chalet][lang]} · {SLOT_LABELS_L[slot_no][lang]}"
+    if iso:
+        picked += f" · {fmt_date_human(iso, lang)}"
+    await message.answer(f"{intro}\n{picked}")
+
+    if iso:
+        await state.set_state(Booking.guests)
+        await message.answer(L(lang, "bk_guests"))
+    else:
+        await state.set_state(Booking.date)
+        await message.answer(L(lang, "bk_date_pick"), reply_markup=date_pick_kb(lang))
+    return True
+
+
 @dp.message(CommandStart())
-async def on_start(message: Message, command: CommandObject):
+async def on_start(message: Message, command: CommandObject, state: FSMContext):
     if message.chat.type != "private":
         return
     if capture_admin(message):
         await apply_commands()
     cid = message.chat.id
-    # Источник из deep-link: t.me/bot?start=instagram  (запоминаем первый раз).
-    payload = (command.args or "").strip().lower()[:32]
-    if payload and str(cid) not in store.get("src", {}):
-        store.setdefault("src", {})[str(cid)] = payload
-        s = store.setdefault("src_starts", {})
-        s[payload] = s.get(payload, 0) + 1
-        save_store()
+    raw = (command.args or "").strip()[:64]
+    low = raw.lower()
+
+    # Язык определяем ДО брони, чтобы тексты были на нужном языке.
     if str(cid) not in store.get("langs", {}):
         code = message.from_user.language_code if message.from_user else None
         set_lang(cid, lang_from_code(code))
     lang = get_lang(cid)
+
+    # Источник из deep-link (запоминаем первый раз). Бронь с сайта = "website".
+    src_label = "website" if low.startswith("w-") else low[:32]
+    if src_label and str(cid) not in store.get("src", {}):
+        store.setdefault("src", {})[str(cid)] = src_label
+        s = store.setdefault("src_starts", {})
+        s[src_label] = s.get(src_label, 0) + 1
+        save_store()
+
+    # Deep-link бронирования с сайта — открываем мастер сразу заполненным.
+    if low.startswith("w-") and await _start_from_web(message, state, low, lang):
+        return
+
     await message.answer(L(lang, "greeting"), reply_markup=main_menu(lang))
     await message.answer(L(lang, "choose_lang"), reply_markup=LANG_PICK_KB)
 
@@ -2077,7 +2130,12 @@ async def bk_date_pick(cb: CallbackQuery, state: FSMContext):
                             date_disp=fmt_date_human(iso, lang), date_iso=iso)
     await cb.answer()
     await cb.message.edit_text(L(lang, "f_date") + ": " + fmt_date_human(iso, lang) + " ✅")
-    await _ask_slot(cb.message, state, lang)
+    # слот мог быть выбран заранее (бронь с сайта) — тогда не переспрашиваем
+    if (await state.get_data()).get("slot_no"):
+        await state.set_state(Booking.guests)
+        await cb.message.answer(L(lang, "bk_guests"))
+    else:
+        await _ask_slot(cb.message, state, lang)
 
 
 @dp.callback_query(F.data.startswith("bk:sl:"), Booking.slot)
@@ -2109,7 +2167,11 @@ async def bk_date(message: Message, state: FSMContext):
     lang = await _wiz_lang(state)
     # Дата введена вручную — точную дату не знаем, поэтому слот покажем с двумя ценами.
     await state.update_data(date=t, date_disp=t, date_iso="")
-    await _ask_slot(message, state, lang)
+    if (await state.get_data()).get("slot_no"):
+        await state.set_state(Booking.guests)
+        await message.answer(L(lang, "bk_guests"))
+    else:
+        await _ask_slot(message, state, lang)
 
 
 @dp.message(Booking.guests)
