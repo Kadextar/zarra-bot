@@ -817,8 +817,8 @@ T = {
     "review_done": {
         "ru": "Спасибо за оценку! 🙏", "uz": "Baho uchun rahmat! 🙏", "en": "Thanks for rating! 🙏"},
     "webapp_btn": {
-        "ru": "🚀 Забронировать в приложении", "uz": "🚀 Ilovada bron qilish",
-        "en": "🚀 Book in the app"},
+        "ru": "🚀 Забронировать", "uz": "🚀 Bron qilish",
+        "en": "🚀 Book now"},
     "webapp_done": {
         "ru": ("Готово! Заявку из приложения передал сотруднику ✅\n"
                "Он скоро свяжется для подтверждения. Спасибо! 🌿"),
@@ -976,15 +976,16 @@ def set_lang(chat_id, lang) -> None:
 def main_menu(lang=DEFAULT_LANG) -> ReplyKeyboardMarkup:
     lang = norm_lang(lang)
     b = lambda k: KeyboardButton(text=BTN[k][lang])
-    rows = [[b("book")],
+    # Одна кнопка брони: приложение (если задана ссылка) ИЛИ пошаговый мастер.
+    url = store.get("webapp_url")
+    if url:
+        book_row = [KeyboardButton(text=L(lang, "webapp_btn"), web_app=WebAppInfo(url=url))]
+    else:
+        book_row = [b("book")]
+    rows = [book_row,
             [b("prices"), b("photo")],
             [b("slots"), b("map")],
             [b("rest"), b("contact")]]
-    # Кнопка мини-приложения — только если задана ссылка (/set_webapp).
-    url = store.get("webapp_url")
-    if url:
-        rows.insert(0, [KeyboardButton(
-            text=L(lang, "webapp_btn"), web_app=WebAppInfo(url=url))])
     return ReplyKeyboardMarkup(
         keyboard=rows, resize_keyboard=True, is_persistent=True,
         input_field_placeholder=PLACEHOLDER[lang],
