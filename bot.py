@@ -44,7 +44,7 @@ from aiogram.types import (
     InputMediaPhoto, InputMediaVideo,
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
-    BotCommandScopeDefault, BotCommandScopeChat,
+    BotCommandScopeDefault, BotCommandScopeChat, WebAppInfo,
 )
 from groq import Groq
 
@@ -444,6 +444,7 @@ def load_store() -> dict:
     data.setdefault("booked", [])      # [{chalet,date(iso),slot,lead_no}] — занятые даты
     data.setdefault("src", {})         # {chat_id(str): "instagram"} — источник гостя
     data.setdefault("src_starts", {})  # {"instagram": N} — заходов по источнику
+    data.setdefault("webapp_url", None)  # ссылка на мини-приложение (Netlify и т.п.)
     return data
 
 
@@ -815,6 +816,16 @@ T = {
         "en": "Thank you for the feedback. Sorry it wasn't perfect — we'll pass it to management to improve 🙏"},
     "review_done": {
         "ru": "Спасибо за оценку! 🙏", "uz": "Baho uchun rahmat! 🙏", "en": "Thanks for rating! 🙏"},
+    "webapp_btn": {
+        "ru": "🚀 Забронировать в приложении", "uz": "🚀 Ilovada bron qilish",
+        "en": "🚀 Book in the app"},
+    "webapp_done": {
+        "ru": ("Готово! Заявку из приложения передал сотруднику ✅\n"
+               "Он скоро свяжется для подтверждения. Спасибо! 🌿"),
+        "uz": ("Tayyor! Ilovadagi arizangiz xodimga yuborildi ✅\n"
+               "Tez orada tasdiqlash uchun bog‘lanadi. Rahmat! 🌿"),
+        "en": ("Done! Your request from the app was sent to our staff ✅\n"
+               "They'll contact you shortly to confirm. Thank you! 🌿")},
 }
 
 # Кнопки мастера (для сравнения и клавиатур) на 3 языках.
@@ -965,12 +976,17 @@ def set_lang(chat_id, lang) -> None:
 def main_menu(lang=DEFAULT_LANG) -> ReplyKeyboardMarkup:
     lang = norm_lang(lang)
     b = lambda k: KeyboardButton(text=BTN[k][lang])
+    rows = [[b("book")],
+            [b("prices"), b("photo")],
+            [b("slots"), b("map")],
+            [b("rest"), b("contact")]]
+    # Кнопка мини-приложения — только если задана ссылка (/set_webapp).
+    url = store.get("webapp_url")
+    if url:
+        rows.insert(0, [KeyboardButton(
+            text=L(lang, "webapp_btn"), web_app=WebAppInfo(url=url))])
     return ReplyKeyboardMarkup(
-        keyboard=[[b("book")],
-                  [b("prices"), b("photo")],
-                  [b("slots"), b("map")],
-                  [b("rest"), b("contact")]],
-        resize_keyboard=True, is_persistent=True,
+        keyboard=rows, resize_keyboard=True, is_persistent=True,
         input_field_placeholder=PLACEHOLDER[lang],
     )
 
@@ -1478,6 +1494,33 @@ async def cmd_setgroup(message: Message):
 def _is_owner(message: Message) -> bool:
     owner = store.get("owner_id")
     return (owner is None) or (message.from_user and message.from_user.id == owner)
+
+
+@dp.message(Command("set_webapp"))
+async def cmd_set_webapp(message: Message):
+    if message.chat.type != "private" or not _is_owner(message):
+        return
+    url = (message.text or "").partition(" ")[2].strip()
+    if not url:
+        cur = store.get("webapp_url") or "не задана"
+        await message.answer(
+            f"Текущая ссылка мини-приложения: {cur}\n\n"
+            "Задать: /set_webapp https://ваш-адрес.netlify.app\n"
+            "Убрать кнопку: /set_webapp off")
+        return
+    if url.lower() == "off":
+        store["webapp_url"] = None
+        save_store()
+        await message.answer("Кнопка приложения убрана. Нажмите /start, чтобы обновить меню.")
+        return
+    if not url.startswith("https://"):
+        await message.answer("Ссылка должна начинаться с https:// (Telegram требует HTTPS).")
+        return
+    store["webapp_url"] = url
+    save_store()
+    await message.answer(
+        "✅ Ссылка сохранена! В меню появилась кнопка «🚀 Забронировать в приложении».",
+        reply_markup=main_menu(get_lang(message.chat.id)))
 
 
 @dp.message(Command("add_admin"))
@@ -2335,6 +2378,46 @@ async def on_owner_media(message: Message):
         return
     save_store()
     await message.answer(f"✅ {len(store['galleries'][cat])}")
+
+
+# =============================================================================
+#  ЗАЯВКА ИЗ МИНИ-ПРИЛОЖЕНИЯ (Telegram Web App -> web_app_data)
+# =============================================================================
+@dp.message(F.web_app_data)
+async def on_webapp_data(message: Message):
+    if message.chat.type != "private":
+        return
+    lang = get_lang(message.chat.id)
+    try:
+        d = json.loads(message.web_app_data.data)
+    except Exception:
+        return
+    chalet = d.get("chalet")
+    slot_no = str(d.get("slot", ""))
+    iso = d.get("date", "")
+    if chalet not in CHALET_NAMES or slot_no not in ("1", "2", "3"):
+        return
+    lead = {
+        "chalet": CHALET_NAMES.get(chalet, chalet),
+        "date": fmt_date_human(iso, "ru") if iso else "",
+        "slot": SLOT_LABELS_L.get(slot_no, {}).get("ru", ""),
+        "guests_total": str(d.get("guests", "")), "guests_overnight": "",
+        "occasion": "", "name": str(d.get("name", "")).strip(),
+        "phone": str(d.get("phone", "")).strip(), "notes": str(d.get("comment", "")).strip(),
+        "chalet_key": chalet, "slot_no": slot_no, "date_iso": iso,
+    }
+    if iso and is_date_busy(chalet, iso, slot_no):
+        lead["conflict"] = True
+    dest = store.get("leads_chat_id") or store.get("owner_id")
+    if not dest:
+        await message.answer(L(lang, "bk_done_nogroup") + CONTACTS_TEXT[lang],
+                             reply_markup=main_menu(lang))
+        return
+    chat_key = f"direct:{message.chat.id}"
+    ensure_chat(chat_key, message.chat.id, False, None)
+    u = message.from_user
+    await post_lead(lead, chat_key, guest_source(message), u.username if u else None)
+    await message.answer(L(lang, "webapp_done"), reply_markup=main_menu(lang))
 
 
 # =============================================================================
