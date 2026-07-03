@@ -262,15 +262,16 @@ GROUP_SYSTEM = GROUP_RULES + "\n\nБАЗА ЗНАНИЙ:\n" + KNOWLEDGE
 
 
 # --- Готовые тексты для кнопок (3 языка) ---------------------------------------
+# {c1..l3} — цены (будни / выходные), подставляются в build_prices_text().
 PRICES_TEXT = {
     "ru": (
         "🏡 Наши шале (цены: будни / выходные)\n\n"
         "«Комфорт» (9 вилл) — ночёвка до 2 чел., днём до 10 гостей:\n"
-        "• День 10:00–17:00 — 1,5 / 1,8 млн\n• Ночь 18:00–09:00 — 2 / 2,4 млн\n"
-        "• Полный день — 3 / 3,6 млн\n\n"
+        "• День 10:00–17:00 — {c1}\n• Ночь 18:00–09:00 — {c2}\n"
+        "• Полный день — {c3}\n\n"
         "«Президент Люкс» (3 виллы) — ночёвка до 7 чел., до 20 гостей:\n"
-        "• День 10:00–17:00 — 3 / 3,6 млн\n• Ночь 18:00–09:00 — 4 / 4,8 млн\n"
-        "• Полный день — 6 / 7,2 млн\n\n"
+        "• День 10:00–17:00 — {l1}\n• Ночь 18:00–09:00 — {l2}\n"
+        "• Полный день — {l3}\n\n"
         "Выходные (Сб, Вс) и праздники +20%. Цены в сумах.\n"
         "Можно проводить дни рождения и мероприятия 🎉\n"
         "Предоплата 50%, возврат при отмене за 3+ дня.\n\n"
@@ -278,11 +279,11 @@ PRICES_TEXT = {
     "uz": (
         "🏡 Bizning shalelar (narx: ish kuni / dam olish)\n\n"
         "«Komfort» (9 villa) — tunash 2 kishigacha, kunduzi 10 mehmongacha:\n"
-        "• Kunduzi 10:00–17:00 — 1,5 / 1,8 mln\n• Tunda 18:00–09:00 — 2 / 2,4 mln\n"
-        "• To‘liq kun — 3 / 3,6 mln\n\n"
+        "• Kunduzi 10:00–17:00 — {c1}\n• Tunda 18:00–09:00 — {c2}\n"
+        "• To‘liq kun — {c3}\n\n"
         "«Prezident Lyuks» (3 villa) — tunash 7 kishigacha, 20 mehmongacha:\n"
-        "• Kunduzi 10:00–17:00 — 3 / 3,6 mln\n• Tunda 18:00–09:00 — 4 / 4,8 mln\n"
-        "• To‘liq kun — 6 / 7,2 mln\n\n"
+        "• Kunduzi 10:00–17:00 — {l1}\n• Tunda 18:00–09:00 — {l2}\n"
+        "• To‘liq kun — {l3}\n\n"
         "Dam olish kunlari (Sha, Yak) va bayramlarda +20%. Narxlar so‘mda.\n"
         "Tug‘ilgan kun va tadbirlar o‘tkazish mumkin 🎉\n"
         "50% oldindan to‘lov, 3+ kun oldin bekor qilsangiz qaytariladi.\n\n"
@@ -290,11 +291,11 @@ PRICES_TEXT = {
     "en": (
         "🏡 Our chalets (prices: weekday / weekend)\n\n"
         "“Comfort” (9 villas) — overnight up to 2, daytime up to 10 guests:\n"
-        "• Day 10:00–17:00 — 1.5 / 1.8M\n• Night 18:00–09:00 — 2 / 2.4M\n"
-        "• Full day — 3 / 3.6M\n\n"
+        "• Day 10:00–17:00 — {c1}\n• Night 18:00–09:00 — {c2}\n"
+        "• Full day — {c3}\n\n"
         "“President Lux” (3 villas) — overnight up to 7, up to 20 guests:\n"
-        "• Day 10:00–17:00 — 3 / 3.6M\n• Night 18:00–09:00 — 4 / 4.8M\n"
-        "• Full day — 6 / 7.2M\n\n"
+        "• Day 10:00–17:00 — {l1}\n• Night 18:00–09:00 — {l2}\n"
+        "• Full day — {l3}\n\n"
         "Weekends (Sat, Sun) and holidays +20%. Prices in UZS (so‘m).\n"
         "Birthdays and events are welcome 🎉\n"
         "50% prepayment, refundable if cancelled 3+ days ahead.\n\n"
@@ -371,6 +372,7 @@ history: dict[str, list[dict]] = {}
 owners: dict[str, int] = {}
 last_lead: dict[str, str] = {}
 group_history: dict[int, list[dict]] = {}   # болтовня в группах
+pending_broadcast: dict[int, str] = {}      # {owner_id: текст рассылки на подтверждении}
 BOT_ID: int | None = None                   # заполняется при старте
 BOT_USERNAME: str | None = None
 
@@ -445,6 +447,8 @@ def load_store() -> dict:
     data.setdefault("src", {})         # {chat_id(str): "instagram"} — источник гостя
     data.setdefault("src_starts", {})  # {"instagram": N} — заходов по источнику
     data.setdefault("webapp_url", None)  # ссылка на мини-приложение (Netlify и т.п.)
+    data.setdefault("prices", {})      # переопределение цен: {chalet:{"wd":{s:str},"we":{s:str}}}
+    data.setdefault("announce", None)  # объявление/акция (текст) — в ответы ИИ и «Шале и цены»
     return data
 
 
@@ -1244,9 +1248,22 @@ async def ask_ai(chat_key: str, user_text: str, lang: str = "ru"):
         "как в выходные): " + ", ".join(sorted(HOLIDAYS)) + ". "
         "В остальные будни (пн–пт) наценки нет."
     )
+    # Актуальные цены (с учётом /setprice) — приоритет над базой знаний.
+    prices_note = (
+        "АКТУАЛЬНЫЕ ЦЕНЫ (будни / выходные +20%; приоритет над базой знаний):\n"
+        f"Комфорт: день {get_price('comfort','1',False)}/{get_price('comfort','1',True)}, "
+        f"ночь {get_price('comfort','2',False)}/{get_price('comfort','2',True)}, "
+        f"полный день {get_price('comfort','3',False)}/{get_price('comfort','3',True)}. "
+        f"Люкс: день {get_price('lux','1',False)}/{get_price('lux','1',True)}, "
+        f"ночь {get_price('lux','2',False)}/{get_price('lux','2',True)}, "
+        f"полный день {get_price('lux','3',False)}/{get_price('lux','3',True)}.")
     messages = [{"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "system", "content": time_note},
-                {"role": "system", "content": holidays_note}]
+                {"role": "system", "content": holidays_note},
+                {"role": "system", "content": prices_note}]
+    if store.get("announce"):
+        messages.append({"role": "system", "content":
+                         "ОБЪЯВЛЕНИЕ/АКЦИЯ (упомяни, если уместно): " + store["announce"]})
     messages += [{"role": t["role"], "content": t["text"]} for t in turns]
 
     def _call():
@@ -1522,6 +1539,141 @@ async def cmd_set_webapp(message: Message):
     await message.answer(
         "✅ Ссылка сохранена! В меню появилась кнопка «🚀 Забронировать в приложении».",
         reply_markup=main_menu(get_lang(message.chat.id)))
+
+
+# --- Редактирование цен без кода -----------------------------------------------
+_CHALET_A = {"lux": "lux", "люкс": "lux", "comfort": "comfort", "комфорт": "comfort"}
+_DAYTYPE_A = {"wd": "wd", "будни": "wd", "we": "we", "выходные": "we", "вых": "we"}
+
+
+@dp.message(Command("prices"))
+async def cmd_prices(message: Message):
+    if message.chat.type != "private" or not _is_owner(message):
+        return
+    lines = ["💰 Текущие цены (будни / выходные):", ""]
+    for ch, nm in (("comfort", "Комфорт"), ("lux", "Люкс")):
+        lines.append(f"🏡 {nm}:")
+        for s, sn in (("1", "День"), ("2", "Ночь"), ("3", "Полный день")):
+            lines.append(f"  {sn}: {get_price(ch, s, False)} / {get_price(ch, s, True)}")
+    lines += ["",
+              "Изменить: /setprice <шале> <слот 1-3> <будни|вых> <цена>",
+              "Пример: /setprice comfort 1 будни 1,6 млн",
+              "⚠️ Цены в мини-приложении меняются отдельно — скажи мне, обновлю."]
+    await message.answer("\n".join(lines))
+
+
+@dp.message(Command("setprice"))
+async def cmd_setprice(message: Message):
+    if message.chat.type != "private" or not _is_owner(message):
+        return
+    parts = (message.text or "").split(maxsplit=4)
+    if len(parts) < 5:
+        await message.answer("Формат: /setprice <шале> <слот 1-3> <будни|вых> <цена>\n"
+                             "Пример: /setprice lux 3 вых 7,5 млн")
+        return
+    chalet = _CHALET_A.get(parts[1].lower())
+    slot = parts[2]
+    key = _DAYTYPE_A.get(parts[3].lower())
+    value = parts[4].strip()
+    if not chalet or slot not in ("1", "2", "3") or not key or not value:
+        await message.answer("Не понял. Шале: comfort/lux; слот: 1/2/3; тип: будни/вых.\n"
+                             "Пример: /setprice comfort 2 будни 2,2 млн")
+        return
+    store.setdefault("prices", {}).setdefault(chalet, {}).setdefault(key, {})[slot] = value
+    save_store()
+    nm = "Комфорт" if chalet == "comfort" else "Люкс"
+    sn = {"1": "День", "2": "Ночь", "3": "Полный день"}[slot]
+    kn = "будни" if key == "wd" else "выходные"
+    await message.answer(f"✅ {nm}, {sn}, {kn} → {value}\n\n"
+                         "Проверить всё: /prices")
+
+
+@dp.message(Command("announce"))
+async def cmd_announce(message: Message):
+    if message.chat.type != "private" or not _is_owner(message):
+        return
+    text = (message.text or "").partition(" ")[2].strip()
+    if not text:
+        cur = store.get("announce") or "нет"
+        await message.answer(f"Текущее объявление: {cur}\n\n"
+                             "Задать: /announce Акция: в июле −10% в будни\n"
+                             "Убрать: /announce off")
+        return
+    if text.lower() == "off":
+        store["announce"] = None
+        save_store()
+        await message.answer("Объявление убрано.")
+        return
+    store["announce"] = text
+    save_store()
+    await message.answer("✅ Объявление сохранено. Бот будет упоминать его и покажет "
+                         "в «🏡 Шале и цены»:\n\n📣 " + text)
+
+
+# --- Рассылка по гостям --------------------------------------------------------
+def guest_chat_ids() -> set:
+    ids = set()
+    for c in store.get("chats", {}).values():
+        if not c.get("is_business") and c.get("chat_id"):
+            ids.add(c["chat_id"])
+    for cid in store.get("langs", {}).keys():
+        try:
+            ids.add(int(cid))
+        except Exception:
+            pass
+    return {i for i in ids if isinstance(i, int) and i > 0}   # только личные чаты
+
+
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: Message):
+    if message.chat.type != "private" or not _is_owner(message):
+        return
+    text = (message.text or "").partition(" ")[2].strip()
+    if not text:
+        await message.answer("Формат: /broadcast <текст сообщения>\n"
+                             "Отправится всем гостям, кто писал боту.")
+        return
+    n = len(guest_chat_ids())
+    if not n:
+        await message.answer("Пока некому рассылать — нет гостей в базе.")
+        return
+    pending_broadcast[message.from_user.id] = text
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"📤 Отправить {n} гостям", callback_data="bcast:go"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="bcast:no")]])
+    await message.answer("Предпросмотр рассылки:\n\n" + text, reply_markup=kb)
+
+
+@dp.callback_query(F.data == "bcast:no")
+async def on_bcast_no(cb: CallbackQuery):
+    pending_broadcast.pop(cb.from_user.id, None)
+    await cb.answer("Отменено")
+    try:
+        await cb.message.edit_text("Рассылка отменена.")
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data == "bcast:go")
+async def on_bcast_go(cb: CallbackQuery):
+    text = pending_broadcast.pop(cb.from_user.id, None)
+    if not text:
+        await cb.answer("Нечего отправлять")
+        return
+    await cb.answer("Отправляю…")
+    try:
+        await cb.message.edit_text("📤 Рассылка запущена…")
+    except Exception:
+        pass
+    sent = failed = 0
+    for cid in guest_chat_ids():
+        try:
+            await bot.send_message(cid, text)
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)   # бережём лимиты Telegram
+    await cb.message.answer(f"✅ Рассылка завершена.\nДоставлено: {sent}\nНе доставлено: {failed}")
 
 
 @dp.message(Command("add_admin"))
@@ -1998,6 +2150,43 @@ SLOT_PRICES_WE = {"comfort": {"1": "1,8 млн", "2": "2,4 млн", "3": "3,6 м
 _SLOT_ICON = {"1": "☀️", "2": "🌙", "3": "🌗"}
 
 
+def get_price(chalet: str, slot, weekend: bool) -> str:
+    """Цена с учётом ручных переопределений (/setprice), иначе — из умолчаний."""
+    s = str(slot)
+    key = "we" if weekend else "wd"
+    ov = (store.get("prices") or {}).get(chalet, {}).get(key, {}).get(s)
+    if ov:
+        return ov
+    return (SLOT_PRICES_WE if weekend else SLOT_PRICES)[chalet][s]
+
+
+def price_disp(chalet: str, slot, weekend: bool, lang: str) -> str:
+    """Цена под язык: млн -> mln (uz) / M и точка (en)."""
+    p = get_price(chalet, slot, weekend)
+    if lang == "uz":
+        return p.replace("млн", "mln")
+    if lang == "en":
+        return p.replace("млн", "M").replace(",", ".")
+    return p
+
+
+def _price_pair(chalet: str, slot, lang: str) -> str:
+    return f"{price_disp(chalet, slot, False, lang)} / {price_disp(chalet, slot, True, lang)}"
+
+
+def build_prices_text(lang: str) -> str:
+    """Текст «Шале и цены» с актуальными ценами и объявлением (если задано)."""
+    lang = norm_lang(lang)
+    txt = PRICES_TEXT[lang].format(
+        c1=_price_pair("comfort", "1", lang), c2=_price_pair("comfort", "2", lang),
+        c3=_price_pair("comfort", "3", lang), l1=_price_pair("lux", "1", lang),
+        l2=_price_pair("lux", "2", lang), l3=_price_pair("lux", "3", lang))
+    ann = store.get("announce")
+    if ann:
+        txt = "📣 " + ann + "\n\n" + txt
+    return txt
+
+
 def book_chalet_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=L(lang, "bk_chalet_comfort"), callback_data="bk:ch:comfort")],
@@ -2008,15 +2197,14 @@ def book_chalet_kb(lang: str) -> InlineKeyboardMarkup:
 
 def slot_kb(chalet: str, lang: str, surcharge=None) -> InlineKeyboardMarkup:
     # surcharge: True -> цена выходного, False -> будни, None -> обе (дата неизвестна).
-    p, pw = SLOT_PRICES[chalet], SLOT_PRICES_WE[chalet]
     rows = []
     for s in ("1", "2", "3"):
         if surcharge is True:
-            price = pw[s]
+            price = get_price(chalet, s, True)
         elif surcharge is False:
-            price = p[s]
+            price = get_price(chalet, s, False)
         else:
-            price = f"{p[s]} / {pw[s]}"
+            price = f"{get_price(chalet, s, False)} / {get_price(chalet, s, True)}"
         rows.append([InlineKeyboardButton(
             text=f"{_SLOT_ICON[s]} {SLOT_LABELS_L[s][lang]} — {price}",
             callback_data=f"bk:sl:{s}")])
@@ -2454,7 +2642,7 @@ async def on_direct_message(message: Message):
     # Кнопки нижнего меню (распознаём на любом из 3 языков).
     key = BTN_LOOKUP.get(text)
     if key == "prices":
-        await message.answer(PRICES_TEXT[lang])
+        await message.answer(build_prices_text(lang))
         return
     if key == "slots":
         await message.answer(SLOTS_TEXT[lang])
@@ -2725,6 +2913,9 @@ STAFF_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="stats", description="Статистика заявок"),
     BotCommand(command="report", description="Отчёт и конверсия"),
     BotCommand(command="busy", description="Занятые даты"),
+    BotCommand(command="prices", description="Цены (изменить)"),
+    BotCommand(command="announce", description="Объявление / акция"),
+    BotCommand(command="broadcast", description="Рассылка по гостям"),
     BotCommand(command="export", description="Выгрузить заявки"),
     BotCommand(command="media_status", description="Что загружено"),
     BotCommand(command="admins", description="Администраторы"),
