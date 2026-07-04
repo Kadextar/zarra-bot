@@ -30,6 +30,7 @@ import time
 import asyncio
 import logging
 import tempfile
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from collections import Counter, deque
@@ -44,7 +45,7 @@ from aiogram.types import (
     InputMediaPhoto, InputMediaVideo,
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
-    BotCommandScopeDefault, BotCommandScopeChat, WebAppInfo,
+    BotCommandScopeDefault, BotCommandScopeChat, WebAppInfo, BufferedInputFile,
 )
 from groq import Groq
 
@@ -210,6 +211,17 @@ RULES = """
 ПРО ВМЕСТИМОСТЬ (не путать):
 - "Спальных мест" — сколько могут ОСТАТЬСЯ НА НОЧЬ (Комфорт 2, Люкс 7).
 - "Посадочных мест" — сколько гостей днём/на мероприятии (Комфорт 10, Люкс 20).
+
+ПОДБОР ПОД МЕРОПРИЯТИЕ (важно, будь как консьерж):
+- Если гость описывает событие (повод, число гостей, дата, пожелания) — АКТИВНО
+  подбери: какое шале подходит по числу гостей (до 10 — Комфорт; 11–20 — Люкс;
+  больше 20 — предложи несколько вилл и связь с сотрудником), какой слот уместен
+  (день рождения днём — слот 1 или 3; ночёвка — слот 2/3), и назови ПРИМЕРНУЮ
+  стоимость для нужной даты (учитывай +20% в выходные/праздники; бери цены из
+  блока актуальных цен).
+- Предложи 3–5 подходящих позиций из меню под повод (шашлыки, пивной сет и т.п.).
+- В конце мягко предложи оформить бронь (собрать данные) — но не выдумывай итог
+  и не занимайся оплатой. Пиши «примерно/ориентировочно», финал подтверждает сотрудник.
 
 СЛУЖЕБНЫЕ ТЕГИ (гость их НЕ видит, не упоминай и не показывай их):
 1) ФОТО/ВИДЕО: когда гость согласился посмотреть конкретное шале — добавь
@@ -641,6 +653,7 @@ BTN = {
     "slots":   {"ru": "📅 Слоты и бронь", "uz": "📅 Vaqt va bron",     "en": "📅 Slots & booking"},
     "map":     {"ru": "📍 Как добраться", "uz": "📍 Qanday borish",    "en": "📍 How to get there"},
     "rest":    {"ru": "🍽 Меню ресторана", "uz": "🍽 Restoran menyusi", "en": "🍽 Restaurant menu"},
+    "event":   {"ru": "🎉 Мероприятие",   "uz": "🎉 Tadbir",           "en": "🎉 Event planner"},
     "contact": {"ru": "💬 Связаться",     "uz": "💬 Bog‘lanish",       "en": "💬 Contact us"},
 }
 # Обратный поиск: текст кнопки на любом языке -> ключ действия.
@@ -830,6 +843,16 @@ T = {
                "Tez orada tasdiqlash uchun bog‘lanadi. Rahmat! 🌿"),
         "en": ("Done! Your request from the app was sent to our staff ✅\n"
                "They'll contact you shortly to confirm. Thank you! 🌿")},
+    "plan_intro": {
+        "ru": ("🎉 С удовольствием помогу спланировать!\n"
+               "Опишите одним сообщением: повод, сколько будет гостей, желаемую дату "
+               "и пожелания — и я подберу шале, время и примерную стоимость."),
+        "uz": ("🎉 Rejalashtirishga yordam beraman!\n"
+               "Bitta xabarda yozing: sabab, nechta mehmon, qaysi sana va istaklar — "
+               "men shale, vaqt va taxminiy narxni tanlab beraman."),
+        "en": ("🎉 Happy to help you plan!\n"
+               "In one message tell me: the occasion, how many guests, preferred date "
+               "and wishes — I'll suggest a chalet, time and an approximate price.")},
 }
 
 # Кнопки мастера (для сравнения и клавиатур) на 3 языках.
@@ -989,7 +1012,8 @@ def main_menu(lang=DEFAULT_LANG) -> ReplyKeyboardMarkup:
     rows = [book_row,
             [b("prices"), b("photo")],
             [b("slots"), b("map")],
-            [b("rest"), b("contact")]]
+            [b("rest"), b("event")],
+            [b("contact")]]
     return ReplyKeyboardMarkup(
         keyboard=rows, resize_keyboard=True, is_persistent=True,
         input_field_placeholder=PLACEHOLDER[lang],
@@ -1480,6 +1504,13 @@ async def cmd_lang(message: Message):
         return
     await message.answer(L(get_lang(message.chat.id), "choose_lang"),
                          reply_markup=LANG_PICK_KB)
+
+
+@dp.message(Command("plan"))
+async def cmd_plan(message: Message):
+    if message.chat.type != "private":
+        return
+    await message.answer(L(get_lang(message.chat.id), "plan_intro"))
 
 
 @dp.callback_query(F.data.startswith("lang:"))
@@ -1985,6 +2016,124 @@ async def cmd_export(message: Message):
 
 
 # =============================================================================
+#  БРЕНДОВАЯ КАРТОЧКА-ПОДТВЕРЖДЕНИЕ (картинка гостю при подтверждении брони)
+# =============================================================================
+CARD = {
+    "confirmed": {"ru": "БРОНЬ ПОДТВЕРЖДЕНА", "uz": "BRON TASDIQLANDI", "en": "BOOKING CONFIRMED"},
+    "chalet": {"ru": "Шале", "uz": "Shale", "en": "Chalet"},
+    "date": {"ru": "Дата", "uz": "Sana", "en": "Date"},
+    "slot": {"ru": "Тариф", "uz": "Tarif", "en": "Rate"},
+    "guests": {"ru": "Гостей", "uz": "Mehmonlar", "en": "Guests"},
+    "name": {"ru": "Гость", "uz": "Mehmon", "en": "Guest"},
+    "footer": {"ru": "Ждём вас в Zarra Resort & SPA",
+               "uz": "Zarra Resort & SPA da kutamiz",
+               "en": "See you at Zarra Resort & SPA"},
+    "caption": {"ru": "🎉 Ваша бронь подтверждена! Ждём вас 🌿",
+                "uz": "🎉 Broningiz tasdiqlandi! Kutamiz 🌿",
+                "en": "🎉 Your booking is confirmed! See you 🌿"},
+}
+
+
+def make_confirmation_card(data: dict, lang: str):
+    """Рисует брендовую карточку подтверждения. Возвращает PNG-байты или None."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    except Exception as e:
+        log.warning(f"PIL недоступен: {e}")
+        return None
+    try:
+        W, H = 1080, 1350
+        GOLD, CREAM, MUTED = (216, 184, 120), (241, 234, 217), (155, 146, 128)
+
+        fdir = Path(__file__).parent / "fonts"
+
+        def font(sz, bold=False, serif=True):
+            if serif:
+                chain = (["DejaVuSerif-Bold.ttf", "DejaVuSerif.ttf"] if bold
+                         else ["DejaVuSerif.ttf", "DejaVuSerif-Bold.ttf"])
+            else:
+                chain = ["DejaVuSans-Bold.ttf", "DejaVuSerif-Bold.ttf"]
+            for nm in chain:
+                try:
+                    return ImageFont.truetype(str(fdir / nm), sz)
+                except Exception:
+                    continue
+            return ImageFont.load_default()
+
+        base = Image.new("RGB", (W, H), (10, 11, 8))
+        glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gd.ellipse([W * 0.15, -280, W * 0.85, 300], fill=(216, 184, 120, 60))
+        gd.ellipse([-220, H - 340, 380, H + 200], fill=(216, 184, 120, 35))
+        glow = glow.filter(ImageFilter.GaussianBlur(140))
+        base = Image.alpha_composite(base.convert("RGBA"), glow).convert("RGB")
+        d = ImageDraw.Draw(base)
+        d.rounded_rectangle([34, 34, W - 34, H - 34], radius=42, outline=GOLD, width=2)
+
+        def centered(y, s, f, fill, ls=0):
+            w = sum(d.textlength(ch, font=f) + ls for ch in s) - (ls if s else 0)
+            x = (W - w) / 2
+            for ch in s:
+                d.text((x, y), ch, font=f, fill=fill)
+                x += d.textlength(ch, font=f) + ls
+
+        centered(150, "ZARRA", font(112, bold=True), CREAM, ls=16)
+        centered(285, "HOTEL & RESORT", font(30, serif=False), GOLD, ls=8)
+        d.line([220, 360, W - 220, 360], fill=GOLD, width=1)
+        centered(430, "✓ " + CARD["confirmed"][lang], font(50, bold=True, serif=False), GOLD, ls=3)
+
+        rows = []
+        if data.get("chalet"):
+            rows.append((CARD["chalet"][lang], str(data["chalet"])))
+        if data.get("date"):
+            rows.append((CARD["date"][lang], str(data["date"])))
+        if data.get("slot"):
+            rows.append((CARD["slot"][lang], str(data["slot"])))
+        if data.get("guests_total"):
+            rows.append((CARD["guests"][lang], str(data["guests_total"])))
+        if data.get("name"):
+            rows.append((CARD["name"][lang], str(data["name"])))
+        fl = font(36, serif=False)
+        y = 600
+        for label, value in rows:
+            d.text((150, y + 8), label, font=fl, fill=MUTED)
+            lw = d.textlength(label, font=fl)
+            avail = (W - 150) - (150 + lw + 40)   # свободное место справа от подписи
+            sz = 42
+            vf = font(sz, bold=True)
+            while sz > 24 and d.textlength(value, font=vf) > avail:
+                sz -= 2
+                vf = font(sz, bold=True)
+            vw = d.textlength(value, font=vf)
+            d.text((W - 150 - vw, y + (44 - sz) // 2), value, font=vf, fill=CREAM)
+            d.line([150, y + 70, W - 150, y + 70], fill=(60, 55, 45), width=1)
+            y += 108
+
+        centered(H - 150, CARD["footer"][lang], font(32), GOLD, ls=2)
+        buf = BytesIO()
+        base.save(buf, "PNG")
+        return buf.getvalue()
+    except Exception as e:
+        log.warning(f"card render error: {e}")
+        return None
+
+
+async def send_photo_to_guest(chat_key: str, data: bytes, caption: str) -> None:
+    c = store.get("chats", {}).get(chat_key)
+    if not c or not c.get("chat_id"):
+        return
+    photo = BufferedInputFile(data, "confirmed.png")
+    try:
+        if c.get("is_business") and c.get("bcid"):
+            await bot.send_photo(c["chat_id"], photo, caption=caption,
+                                 business_connection_id=c["bcid"])
+        else:
+            await bot.send_photo(c["chat_id"], photo, caption=caption)
+    except Exception as e:
+        log.warning(f"send card: {e}")
+
+
+# =============================================================================
 #  КНОПКИ (callback) — заявки и выбор галереи
 # =============================================================================
 @dp.callback_query(F.data.startswith("lead:"))
@@ -1998,8 +2147,10 @@ async def on_lead_action(cb: CallbackQuery):
 
     status_map = {"take": "in_progress", "confirm": "confirmed", "reject": "rejected"}
     blocked_note = ""
+    lead_rec = None
     for rec in store.get("leads", []):
         if rec.get("message_id") == cb.message.message_id and rec.get("chat_id") == cb.message.chat.id:
+            lead_rec = rec
             rec["status"] = status_map.get(action, rec.get("status"))
             rec["by"] = who
             data = rec.get("data", {})
@@ -2021,6 +2172,13 @@ async def on_lead_action(cb: CallbackQuery):
     elif action == "confirm":
         await cb.message.edit_text(base + f"\n\n✅ ПОДТВЕРЖДЕНО · {who} · {t}{blocked_note}")
         await cb.answer("Подтверждено ✅")
+        # Красивая карточка-подтверждение гостю.
+        ck = lead_rec.get("chat_key") if lead_rec else None
+        if ck:
+            glang = _guest_lang(ck)
+            img = make_confirmation_card(lead_rec.get("data", {}), glang)
+            if img:
+                await send_photo_to_guest(ck, img, CARD["caption"][glang])
     elif action == "reject":
         await cb.message.edit_text(base + f"\n\n❌ ОТКЛОНЕНО · {who} · {t}")
         await cb.answer("Отклонено")
@@ -2662,6 +2820,9 @@ async def on_direct_message(message: Message):
         else:
             await message.answer(L(lang, "rest_closed"))
         return
+    if key == "event":
+        await message.answer(L(lang, "plan_intro"))
+        return
 
     # Геолокация по тексту
     if detect_location_request(text):
@@ -2907,6 +3068,7 @@ async def scheduler() -> None:
 PUBLIC_COMMANDS = [
     BotCommand(command="start", description="Главное меню / Bosh menyu / Menu"),
     BotCommand(command="book", description="Забронировать / Bron qilish / Book"),
+    BotCommand(command="plan", description="Подобрать под мероприятие / Event"),
     BotCommand(command="lang", description="Язык / Til / Language"),
 ]
 STAFF_COMMANDS = PUBLIC_COMMANDS + [
