@@ -462,6 +462,8 @@ def load_store() -> dict:
     data.setdefault("prices", {})      # переопределение цен: {chalet:{"wd":{s:str},"we":{s:str}}}
     data.setdefault("announce", None)  # объявление/акция (текст) — в ответы ИИ и «Шале и цены»
     data.setdefault("card", None)      # карта для предоплаты (текст: номер + имя)
+    data.setdefault("pay_hours", 3)    # сколько часов на предоплату
+    data.setdefault("waitlist", [])    # [{chat_key,chalet,date,slot,no,ts}]
     return data
 
 
@@ -858,6 +860,28 @@ T = {
         "ru": "Спасибо! Чек получили ✅ Сотрудник проверит оплату и подтвердит бронь.",
         "uz": "Rahmat! Chek qabul qilindi ✅ Xodim to‘lovni tekshirib, bronni tasdiqlaydi.",
         "en": "Thank you! Receipt received ✅ Our staff will verify payment and confirm the booking."},
+    "pay_deadline_line": {
+        "ru": "⏳ Пожалуйста, оплатите до {time} (Ташкент) — иначе бронь снимется.",
+        "uz": "⏳ Iltimos, {time} gacha to‘lang (Toshkent) — aks holda bron bekor bo‘ladi.",
+        "en": "⏳ Please pay by {time} (Tashkent) — otherwise the booking will be released."},
+    "pay_expired": {
+        "ru": "К сожалению, оплата не поступила вовремя, бронь пока не подтверждена. "
+              "Если ещё актуально — напишите нам, оформим заново 🙂",
+        "uz": "Afsuski, to‘lov o‘z vaqtida kelmadi, bron hali tasdiqlanmadi. "
+              "Agar hali dolzarb bo‘lsa — yozing, qaytadan rasmiylashtiramiz 🙂",
+        "en": "Unfortunately the payment didn't arrive in time, so the booking isn't confirmed. "
+              "If you're still interested — message us and we'll set it up again 🙂"},
+    "wait_added": {
+        "ru": "Добавили вас в лист ожидания на {date} ⏳ Если место освободится — сразу напишем!",
+        "uz": "{date} uchun kutish ro‘yxatiga qo‘shdik ⏳ Joy bo‘shasa — darrov yozamiz!",
+        "en": "You're on the waitlist for {date} ⏳ If a spot opens up — we'll message you right away!"},
+    "wait_free": {
+        "ru": "🎉 На {date} освободилось место в Zarra Resort! Успейте забронировать — "
+              "напишите нам или нажмите «🚀 Забронировать».",
+        "uz": "🎉 {date} uchun Zarra Resortda joy bo‘shadi! Ulgurib bron qiling — "
+              "yozing yoki «🚀 Bron qilish»ni bosing.",
+        "en": "🎉 A spot opened up for {date} at Zarra Resort! Book now — "
+              "message us or tap “🚀 Book now”."},
     "plan_intro": {
         "ru": ("🎉 С удовольствием помогу спланировать!\n"
                "Опишите одним сообщением: повод, сколько будет гостей, желаемую дату "
@@ -1081,6 +1105,7 @@ def lead_keyboard(username: str | None = None) -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="❌ Отклонить", callback_data="lead:reject")],
         [InlineKeyboardButton(text="🙋 Беру в работу", callback_data="lead:take"),
          InlineKeyboardButton(text="💳 Запросить предоплату", callback_data="lead:invoice")],
+        [InlineKeyboardButton(text="⏳ В лист ожидания", callback_data="lead:waitlist")],
     ]
     if username:
         rows.append([InlineKeyboardButton(text="✍️ Открыть чат гостя",
@@ -1911,6 +1936,9 @@ async def cmd_free(message: Message):
     if ok:
         fd, fn = free_counts(p[0], p[1])
         await message.answer(f"🟢 Освободил 1 виллу. Свободно: день {fd}, ночь {fn}.")
+        n = await notify_waitlist(p[0], p[1])
+        if n:
+            await message.answer(f"⏳ Уведомил {n} гостя(ей) из листа ожидания.")
     else:
         await message.answer("Такой занятой виллы в календаре нет.")
 
@@ -2404,6 +2432,9 @@ async def on_lead_action(cb: CallbackQuery):
     elif action == "reject":
         await cb.message.edit_text(base + f"\n\n❌ ОТКЛОНЕНО · {who} · {t}")
         await cb.answer("Отклонено")
+        d = lead_rec.get("data", {}) if lead_rec else {}
+        if d.get("chalet_key") and d.get("date_iso"):
+            await notify_waitlist(d["chalet_key"], d["date_iso"])
     elif action == "invoice":
         card = store.get("card")
         if not card:
@@ -2425,14 +2456,42 @@ async def on_lead_action(cb: CallbackQuery):
                     amt = " — " + fmt_sum(num // 2, glang)
             except Exception:
                 pass
-        await send_to_guest(ck, L(glang, "pay_request", amt=amt, card=card))
+        hours = int(store.get("pay_hours", 3) or 3)
+        deadline = tashkent_now() + timedelta(hours=hours)
+        msg = L(glang, "pay_request", amt=amt, card=card)
+        msg += "\n\n" + L(glang, "pay_deadline_line", time=deadline.strftime("%H:%M"))
+        await send_to_guest(ck, msg)
         c = store.get("chats", {}).get(ck)
         if c:
             c["await_receipt"] = lead_rec.get("no")
+            c["pay_deadline"] = deadline.strftime("%Y-%m-%d %H:%M")
             save_store()
-        await cb.answer("Гостю отправлен запрос на предоплату 💳")
+        await cb.answer(f"Запрос на предоплату отправлен (срок {hours} ч) 💳")
         try:
             await cb.message.edit_text(base + f"\n💳 Предоплата запрошена · {who}",
+                                       reply_markup=cb.message.reply_markup)
+        except Exception:
+            pass
+    elif action == "waitlist":
+        ck = lead_rec.get("chat_key") if lead_rec else None
+        d = lead_rec.get("data", {}) if lead_rec else {}
+        if not ck or not d.get("chalet_key") or not d.get("date_iso"):
+            await cb.answer("Нет точной даты — лист ожидания доступен для заявок из мастера.",
+                            show_alert=True)
+            return
+        wl = store.setdefault("waitlist", [])
+        no = lead_rec.get("no")
+        if not any(w.get("no") == no for w in wl):
+            wl.append({"chat_key": ck, "chalet": d["chalet_key"], "date": d["date_iso"],
+                       "slot": d.get("slot_no", ""), "no": no,
+                       "ts": tashkent_now().strftime("%Y-%m-%d %H:%M")})
+            save_store()
+        glang = _guest_lang(ck)
+        await send_to_guest(ck, L(glang, "wait_added",
+                                  date=fmt_date_human(d["date_iso"], glang)))
+        await cb.answer("Гость добавлен в лист ожидания ⏳")
+        try:
+            await cb.message.edit_text(base + f"\n⏳ В листе ожидания · {who}",
                                        reply_markup=cb.message.reply_markup)
         except Exception:
             pass
@@ -3025,6 +3084,7 @@ async def maybe_receipt(message: Message) -> bool:
             log.warning(f"receipt fwd: {e}")
             return False
     c["await_receipt"] = None
+    c["pay_deadline"] = None
     save_store()
     await message.answer(L(get_lang(message.chat.id), "receipt_got"))
     return True
@@ -3376,12 +3436,68 @@ async def on_rate(cb: CallbackQuery):
             log.warning(f"rate alert: {e}")
 
 
+async def run_payment_timeouts() -> None:
+    """Снимает запрос предоплаты, если гость не оплатил за отведённое время."""
+    now = tashkent_now()
+    changed = False
+    for chat_key, c in list(store.get("chats", {}).items()):
+        no = c.get("await_receipt")
+        dl = c.get("pay_deadline")
+        if not no or not dl:
+            continue
+        try:
+            dead = datetime.strptime(dl, "%Y-%m-%d %H:%M")
+        except Exception:
+            continue
+        if now < dead:
+            continue
+        c["await_receipt"] = None
+        c["pay_deadline"] = None
+        changed = True
+        glang = _guest_lang(chat_key)
+        await send_to_guest(chat_key, L(glang, "pay_expired"))
+        dest = store.get("leads_chat_id") or store.get("owner_id")
+        if dest:
+            try:
+                await bot.send_message(
+                    dest, f"⌛ Заявка #{no}: предоплата не поступила вовремя — "
+                          "слот свободен, гость уведомлён.")
+            except Exception:
+                pass
+        await asyncio.sleep(0.3)
+    if changed:
+        save_store()
+
+
+async def notify_waitlist(chalet: str, iso: str) -> int:
+    """Освободилось место — пишем ждущим гостям (и убираем их из очереди)."""
+    if not chalet or not iso:
+        return 0
+    wl = store.get("waitlist", [])
+    remaining, notified = [], 0
+    for w in wl:
+        if (w.get("chalet") == chalet and w.get("date") == iso
+                and not is_date_busy(chalet, iso, w.get("slot", ""))):
+            glang = _guest_lang(w.get("chat_key"))
+            if await send_to_guest(w.get("chat_key"),
+                                   L(glang, "wait_free", date=fmt_date_human(iso, glang))):
+                notified += 1
+                await asyncio.sleep(0.3)
+        else:
+            remaining.append(w)
+    if notified:
+        store["waitlist"] = remaining
+        save_store()
+    return notified
+
+
 async def scheduler() -> None:
     last_morning_day = None
     while True:
         try:
             now = tashkent_now()
             await run_followups()
+            await run_payment_timeouts()
             day = now.strftime("%Y-%m-%d")
             if now.hour == 9 and last_morning_day != day:
                 backup_store()
