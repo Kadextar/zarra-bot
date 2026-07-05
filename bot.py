@@ -1332,6 +1332,77 @@ async def transcribe_voice(file_id: str) -> str | None:
         return None
 
 
+# --- Озвучка ответа (голосовой ответ бота) -------------------------------------
+async def synth_voice(text: str, lang: str):
+    """Озвучивает текст через gTTS. Возвращает mp3-байты или None."""
+    try:
+        from gtts import gTTS
+    except Exception as e:
+        log.warning(f"gTTS недоступен: {e}")
+        return None
+    text = (text or "").strip()
+    if not text:
+        return None
+    text = text[:600]
+    code = {"ru": "ru", "en": "en", "uz": "uz"}.get(lang, "ru")
+
+    def _gen(c):
+        buf = BytesIO()
+        gTTS(text, lang=c).write_to_fp(buf)
+        return buf.getvalue()
+
+    try:
+        return await asyncio.to_thread(_gen, code)
+    except Exception:
+        try:
+            return await asyncio.to_thread(_gen, "ru")   # если язык не поддержан
+        except Exception as e:
+            log.warning(f"tts error: {e}")
+            return None
+
+
+def _mp3_to_ogg(mp3: bytes):
+    """Конвертирует mp3 -> ogg/opus (нужен ffmpeg). Для «голосового пузыря»."""
+    import shutil, subprocess, tempfile
+    if not shutil.which("ffmpeg"):
+        return None
+    ap = op = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as a:
+            a.write(mp3)
+            ap = a.name
+        op = ap[:-4] + ".ogg"
+        subprocess.run(["ffmpeg", "-y", "-i", ap, "-c:a", "libopus", "-b:a", "40k", op],
+                       check=True, capture_output=True)
+        with open(op, "rb") as f:
+            return f.read()
+    except Exception as e:
+        log.warning(f"ffmpeg convert: {e}")
+        return None
+    finally:
+        for p in (ap, op):
+            try:
+                if p:
+                    os.unlink(p)
+            except Exception:
+                pass
+
+
+async def send_voice_reply(chat_id: int, mp3: bytes, bcid=None) -> None:
+    if not mp3:
+        return
+    ogg = await asyncio.to_thread(_mp3_to_ogg, mp3)
+    try:
+        if ogg:
+            await bot.send_voice(chat_id, BufferedInputFile(ogg, "zarra.ogg"),
+                                 business_connection_id=bcid)
+        else:
+            await bot.send_audio(chat_id, BufferedInputFile(mp3, "zarra.mp3"),
+                                 title="Zarra 🌿", business_connection_id=bcid)
+    except Exception as e:
+        log.warning(f"send voice: {e}")
+
+
 # =============================================================================
 #  БИЗНЕС-РЕЖИМ (бот отвечает от имени профиля)
 # =============================================================================
@@ -1919,6 +1990,18 @@ async def cmd_set_address(message: Message):
     await message.answer(f"✅ Адрес сохранён:\n{addr}")
 
 
+@dp.message(Command("chart"))
+async def cmd_chart(message: Message):
+    if not _is_staff(message):
+        return
+    img = make_stats_chart()
+    if not img:
+        await message.answer("График сейчас недоступен (нет библиотеки Pillow на сервере).")
+        return
+    await message.answer_photo(BufferedInputFile(img, "chart.png"),
+                               caption="📊 Загрузка за 14 дней")
+
+
 @dp.message(Command("report"))
 async def cmd_report(message: Message):
     if not _is_staff(message):
@@ -2131,6 +2214,106 @@ async def send_photo_to_guest(chat_key: str, data: bytes, caption: str) -> None:
             await bot.send_photo(c["chat_id"], photo, caption=caption)
     except Exception as e:
         log.warning(f"send card: {e}")
+
+
+# =============================================================================
+#  ГРАФИК АНАЛИТИКИ (картинка для сотрудников)
+# =============================================================================
+_FONT_DIR = Path(__file__).parent / "fonts"
+
+
+def _brand_font(sz, bold=False, serif=True):
+    from PIL import ImageFont
+    if serif:
+        chain = (["DejaVuSerif-Bold.ttf", "DejaVuSerif.ttf"] if bold
+                 else ["DejaVuSerif.ttf", "DejaVuSerif-Bold.ttf"])
+    else:
+        chain = ["DejaVuSans-Bold.ttf", "DejaVuSerif-Bold.ttf"]
+    for nm in chain:
+        try:
+            return ImageFont.truetype(str(_FONT_DIR / nm), sz)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def make_stats_chart():
+    """Брендовый график загрузки за 14 дней. Возвращает PNG-байты или None."""
+    try:
+        from PIL import Image, ImageDraw, ImageFilter
+    except Exception as e:
+        log.warning(f"PIL недоступен: {e}")
+        return None
+    try:
+        now = tashkent_now()
+        days = [now - timedelta(days=i) for i in range(13, -1, -1)]
+        daily = store.get("daily", {})
+        leads = store.get("leads", [])
+        inq, lds = [], []
+        for dt in days:
+            ds = dt.strftime("%Y-%m-%d")
+            inq.append(int(daily.get(ds, {}).get("inq", 0)))
+            lds.append(sum(1 for x in leads if x.get("day") == ds))
+        maxv = max(inq + lds + [1])
+        d7 = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)}
+        inq7 = sum(daily.get(x, {}).get("inq", 0) for x in d7)
+        ld7 = [x for x in leads if x.get("day") in d7]
+        conf7 = sum(1 for x in ld7 if x.get("status") == "confirmed")
+        conv = round(100 * len(ld7) / inq7) if inq7 else 0
+
+        W, H = 1080, 760
+        GOLD, CREAM, MUTED, GRID = (216, 184, 120), (241, 234, 217), (150, 141, 123), (48, 44, 37)
+        base = Image.new("RGB", (W, H), (10, 11, 8))
+        glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(glow).ellipse([W * 0.2, -260, W * 0.8, 240], fill=(216, 184, 120, 45))
+        base = Image.alpha_composite(base.convert("RGBA"),
+                                     glow.filter(ImageFilter.GaussianBlur(130))).convert("RGB")
+        d = ImageDraw.Draw(base)
+        d.rounded_rectangle([28, 28, W - 28, H - 28], radius=34, outline=GOLD, width=2)
+        d.text((70, 52), "ZARRA", font=_brand_font(44, bold=True), fill=CREAM)
+        d.text((72, 108), "Загрузка · 14 дней", font=_brand_font(30, serif=False), fill=GOLD)
+        # легенда
+        d.rectangle([W - 430, 66, W - 410, 86], fill=MUTED)
+        d.text((W - 400, 62), "обращения", font=_brand_font(26, serif=False), fill=CREAM)
+        d.rectangle([W - 430, 104, W - 410, 124], fill=GOLD)
+        d.text((W - 400, 100), "заявки", font=_brand_font(26, serif=False), fill=CREAM)
+
+        left, right, top, bot = 90, W - 60, 190, H - 150
+        plotW, plotH = right - left, bot - top
+        # сетка
+        gf = _brand_font(22, serif=False)
+        for k in range(5):
+            yy = bot - plotH * k / 4
+            d.line([left, yy, right, yy], fill=GRID, width=1)
+            d.text((left - 46, yy - 12), str(round(maxv * k / 4)), font=gf, fill=MUTED)
+        slot = plotW / 14
+        bw = slot * 0.30
+        lf = _brand_font(22, serif=False)
+        for i in range(14):
+            cx = left + i * slot + slot / 2
+            hi = plotH * inq[i] / maxv
+            hl = plotH * lds[i] / maxv
+            d.rectangle([cx - bw - 3, bot - hi, cx - 3, bot], fill=MUTED)
+            d.rectangle([cx + 3, bot - hl, cx + bw + 3, bot], fill=GOLD)
+            lbl = str(days[i].day)
+            w = d.textlength(lbl, font=lf)
+            d.text((cx - w / 2, bot + 12), lbl, font=lf, fill=MUTED)
+        # итоги за 7 дней (авто-подгонка ширины)
+        summ = (f"7 дней:  {inq7} обращ.  ·  {len(ld7)} заявок  ·  "
+                f"{conf7} подтв.  ·  {conv}% конверсия")
+        sz = 30
+        sf = _brand_font(sz, serif=False)
+        while sz > 18 and d.textlength(summ, font=sf) > W - 90:
+            sz -= 2
+            sf = _brand_font(sz, serif=False)
+        sw = d.textlength(summ, font=sf)
+        d.text(((W - sw) / 2, H - 92), summ, font=sf, fill=CREAM)
+        buf = BytesIO()
+        base.save(buf, "PNG")
+        return buf.getvalue()
+    except Exception as e:
+        log.warning(f"chart render error: {e}")
+        return None
 
 
 # =============================================================================
@@ -2779,7 +2962,8 @@ async def on_direct_message(message: Message):
     if is_rate_limited(message.chat.id):
         return
     lang = get_lang(message.chat.id)
-    if message.voice or message.audio:
+    was_voice = bool(message.voice or message.audio)
+    if was_voice:
         await bot.send_chat_action(message.chat.id, "typing")
         text = await transcribe_voice((message.voice or message.audio).file_id)
         if not text:
@@ -2846,6 +3030,10 @@ async def on_direct_message(message: Message):
     answer, lead, gal, need_human = await ask_ai(chat_key, text, lang)
     if answer:
         await message.answer(answer, reply_markup=links_keyboard())
+        # Гость написал голосом — отвечаем и голосом тоже.
+        if was_voice:
+            await bot.send_chat_action(message.chat.id, "record_voice")
+            await send_voice_reply(message.chat.id, await synth_voice(answer, lang))
     elif gal:
         await message.answer("👇")
     if gal and store["galleries"].get(gal):
@@ -3074,6 +3262,7 @@ PUBLIC_COMMANDS = [
 STAFF_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="stats", description="Статистика заявок"),
     BotCommand(command="report", description="Отчёт и конверсия"),
+    BotCommand(command="chart", description="График загрузки"),
     BotCommand(command="busy", description="Занятые даты"),
     BotCommand(command="prices", description="Цены (изменить)"),
     BotCommand(command="announce", description="Объявление / акция"),
