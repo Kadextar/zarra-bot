@@ -461,6 +461,7 @@ def load_store() -> dict:
     data.setdefault("webapp_url", None)  # ссылка на мини-приложение (Netlify и т.п.)
     data.setdefault("prices", {})      # переопределение цен: {chalet:{"wd":{s:str},"we":{s:str}}}
     data.setdefault("announce", None)  # объявление/акция (текст) — в ответы ИИ и «Шале и цены»
+    data.setdefault("card", None)      # карта для предоплаты (текст: номер + имя)
     return data
 
 
@@ -843,6 +844,20 @@ T = {
                "Tez orada tasdiqlash uchun bog‘lanadi. Rahmat! 🌿"),
         "en": ("Done! Your request from the app was sent to our staff ✅\n"
                "They'll contact you shortly to confirm. Thank you! 🌿")},
+    "pay_request": {
+        "ru": ("Отлично! Для подтверждения брони нужна предоплата 50%{amt}.\n"
+               "Переведите на карту:\n\n💳 {card}\n\n"
+               "После оплаты пришлите сюда скриншот чека 📸"),
+        "uz": ("Ajoyib! Bronni tasdiqlash uchun 50% oldindan to‘lov kerak{amt}.\n"
+               "Kartaga o‘tkazing:\n\n💳 {card}\n\n"
+               "To‘lovdan so‘ng bu yerga chek skrinshotini yuboring 📸"),
+        "en": ("Great! To confirm the booking we need a 50% prepayment{amt}.\n"
+               "Transfer to the card:\n\n💳 {card}\n\n"
+               "After payment, send a screenshot of the receipt here 📸")},
+    "receipt_got": {
+        "ru": "Спасибо! Чек получили ✅ Сотрудник проверит оплату и подтвердит бронь.",
+        "uz": "Rahmat! Chek qabul qilindi ✅ Xodim to‘lovni tekshirib, bronni tasdiqlaydi.",
+        "en": "Thank you! Receipt received ✅ Our staff will verify payment and confirm the booking."},
     "plan_intro": {
         "ru": ("🎉 С удовольствием помогу спланировать!\n"
                "Опишите одним сообщением: повод, сколько будет гостей, желаемую дату "
@@ -1064,7 +1079,8 @@ def lead_keyboard(username: str | None = None) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="✅ Подтвердить", callback_data="lead:confirm"),
          InlineKeyboardButton(text="❌ Отклонить", callback_data="lead:reject")],
-        [InlineKeyboardButton(text="🙋 Беру в работу", callback_data="lead:take")],
+        [InlineKeyboardButton(text="🙋 Беру в работу", callback_data="lead:take"),
+         InlineKeyboardButton(text="💳 Запросить предоплату", callback_data="lead:invoice")],
     ]
     if username:
         rows.append([InlineKeyboardButton(text="✍️ Открыть чат гостя",
@@ -1712,6 +1728,28 @@ async def cmd_announce(message: Message):
                          "в «🏡 Шале и цены»:\n\n📣 " + text)
 
 
+@dp.message(Command("set_card"))
+async def cmd_set_card(message: Message):
+    if message.chat.type != "private" or not _is_owner(message):
+        return
+    card = (message.text or "").partition(" ")[2].strip()
+    if not card:
+        cur = store.get("card") or "не задана"
+        await message.answer(f"Карта для предоплаты: {cur}\n\n"
+                             "Задать: /set_card 5614 6818 7306 2941 Anvar Bahronov\n"
+                             "Убрать: /set_card off")
+        return
+    if card.lower() == "off":
+        store["card"] = None
+        save_store()
+        await message.answer("Карта убрана.")
+        return
+    store["card"] = card
+    save_store()
+    await message.answer("✅ Карта сохранена:\n💳 " + card +
+                         "\n\nТеперь под заявкой есть кнопка «💳 Запросить предоплату».")
+
+
 # --- Рассылка по гостям --------------------------------------------------------
 def guest_chat_ids() -> set:
     ids = set()
@@ -2334,8 +2372,9 @@ async def on_lead_action(cb: CallbackQuery):
     for rec in store.get("leads", []):
         if rec.get("message_id") == cb.message.message_id and rec.get("chat_id") == cb.message.chat.id:
             lead_rec = rec
-            rec["status"] = status_map.get(action, rec.get("status"))
-            rec["by"] = who
+            if action in status_map:
+                rec["status"] = status_map[action]
+                rec["by"] = who
             data = rec.get("data", {})
             if action == "confirm" and data.get("date_iso") and data.get("chalet_key"):
                 if add_booked(data["chalet_key"], data["date_iso"],
@@ -2365,6 +2404,38 @@ async def on_lead_action(cb: CallbackQuery):
     elif action == "reject":
         await cb.message.edit_text(base + f"\n\n❌ ОТКЛОНЕНО · {who} · {t}")
         await cb.answer("Отклонено")
+    elif action == "invoice":
+        card = store.get("card")
+        if not card:
+            await cb.answer("Сначала задайте карту в личке боту: /set_card 5614 … Имя",
+                            show_alert=True)
+            return
+        ck = lead_rec.get("chat_key") if lead_rec else None
+        if not ck:
+            await cb.answer("Не нашёл чат гостя.", show_alert=True)
+            return
+        glang = _guest_lang(ck)
+        data = lead_rec.get("data", {})
+        amt = ""
+        if data.get("chalet_key") and data.get("slot_no") and data.get("date_iso"):
+            try:
+                we = is_surcharge_day(datetime.strptime(data["date_iso"], "%Y-%m-%d"))
+                num = price_num(data["chalet_key"], data["slot_no"], we)
+                if num:
+                    amt = " — " + fmt_sum(num // 2, glang)
+            except Exception:
+                pass
+        await send_to_guest(ck, L(glang, "pay_request", amt=amt, card=card))
+        c = store.get("chats", {}).get(ck)
+        if c:
+            c["await_receipt"] = lead_rec.get("no")
+            save_store()
+        await cb.answer("Гостю отправлен запрос на предоплату 💳")
+        try:
+            await cb.message.edit_text(base + f"\n💳 Предоплата запрошена · {who}",
+                                       reply_markup=cb.message.reply_markup)
+        except Exception:
+            pass
     else:
         await cb.answer()
 
@@ -2499,6 +2570,33 @@ def get_price(chalet: str, slot, weekend: bool) -> str:
     if ov:
         return ov
     return (SLOT_PRICES_WE if weekend else SLOT_PRICES)[chalet][s]
+
+
+def price_to_num(s: str):
+    """'1,5 млн' -> 1500000; '1600000' -> 1600000; иначе None."""
+    if not s:
+        return None
+    t = str(s).lower().replace(" ", "").replace(" ", "")
+    mult = 1
+    for suf in ("млн", "mln", "m"):
+        if suf in t:
+            mult = 1_000_000
+            t = t.replace(suf, "")
+            break
+    t = t.replace(",", ".")
+    try:
+        return int(round(float(t) * mult))
+    except Exception:
+        return None
+
+
+def price_num(chalet: str, slot, weekend: bool):
+    return price_to_num(get_price(chalet, slot, weekend))
+
+
+def fmt_sum(n: int, lang: str) -> str:
+    cur = {"ru": "сум", "uz": "so‘m", "en": "UZS"}.get(lang, "сум")
+    return f"{n:,}".replace(",", " ") + " " + cur
 
 
 def price_disp(chalet: str, slot, weekend: bool, lang: str) -> str:
@@ -2891,6 +2989,47 @@ async def on_location(message: Message):
 # =============================================================================
 #  ЗАГРУЗКА ГАЛЕРЕИ (фото/видео от владельца в режиме /setup_*)
 # =============================================================================
+async def maybe_receipt(message: Message) -> bool:
+    """Если от гостя ждём чек оплаты — пересылаем его фото/файл в группу заявок."""
+    chat_key = f"direct:{message.chat.id}"
+    c = store.get("chats", {}).get(chat_key)
+    no = c.get("await_receipt") if c else None
+    if not no:
+        return False
+    dest = store.get("leads_chat_id") or store.get("owner_id")
+    if not dest:
+        return False
+    reply_to = None
+    for rec in store.get("leads", []):
+        if rec.get("no") == no:
+            reply_to = rec.get("message_id")
+            break
+    cap = (f"💳 Чек оплаты по заявке #{no} от {guest_source(message)}\n"
+           "Проверьте оплату и нажмите «✅ Подтвердить».")
+    try:
+        if message.photo:
+            await bot.send_photo(dest, message.photo[-1].file_id, caption=cap,
+                                 reply_to_message_id=reply_to)
+        elif message.document:
+            await bot.send_document(dest, message.document.file_id, caption=cap,
+                                    reply_to_message_id=reply_to)
+        else:
+            return False
+    except Exception:
+        try:   # карточка могла быть удалена — шлём без reply
+            if message.photo:
+                await bot.send_photo(dest, message.photo[-1].file_id, caption=cap)
+            else:
+                await bot.send_document(dest, message.document.file_id, caption=cap)
+        except Exception as e:
+            log.warning(f"receipt fwd: {e}")
+            return False
+    c["await_receipt"] = None
+    save_store()
+    await message.answer(L(get_lang(message.chat.id), "receipt_got"))
+    return True
+
+
 @dp.message(F.photo | F.video | F.document)
 async def on_owner_media(message: Message):
     if message.chat.type != "private":
@@ -2898,6 +3037,8 @@ async def on_owner_media(message: Message):
     uid = message.from_user.id if message.from_user else None
     cat = collecting.get(uid)
     if not cat:
+        # не в режиме загрузки галереи — возможно, гость прислал чек оплаты
+        await maybe_receipt(message)
         return
     if message.photo:
         store["galleries"][cat].append({"t": "photo", "id": message.photo[-1].file_id})
