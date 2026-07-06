@@ -171,6 +171,11 @@ Telegram: @zarra_resort | Instagram: @zarraresort
 - Телефон с 09:00 до 18:00: +998 87 591 33 30
 - Телефон с 18:00 до 23:00: +998 97 614 77 74
 
+КАК ДОБРАТЬСЯ / ЛОКАЦИЯ:
+- ВАЖНО: советуй строить маршрут в 2ГИС — там точная точка: https://go.2gis.com/iob7Q
+  Google Maps иногда ведёт не на ту улицу, поэтому 2ГИС надёжнее.
+- Резорт в Самаркандском районе, посёлок Акбуйра (Oqbuyra qishlog'i).
+
 ДОПОЛНИТЕЛЬНО (Азамат, заполни сам, если знаешь):
 - Можно ли с животными: (не указано)
 - Парковка: (не указано)
@@ -636,10 +641,10 @@ async def send_location_card(chat_id: int, bcid, lang: str = "ru") -> None:
         addr = loc.get("address") or ""
         addr = (addr + "\n") if addr else ""
         await bot.send_message(chat_id, L(lang, "loc_card", addr=addr),
-                               business_connection_id=bcid)
+                               business_connection_id=bcid, reply_markup=location_kb())
     else:
         await bot.send_message(chat_id, L(lang, "loc_no") + CONTACTS_TEXT[lang],
-                               business_connection_id=bcid)
+                               business_connection_id=bcid, reply_markup=location_kb())
 
 
 # =============================================================================
@@ -717,9 +722,15 @@ T = {
         "uz": "📍 Aniq manzilni biz bilan aniqlang:\n",
         "en": "📍 Please check the exact address with us:\n"},
     "loc_card": {
-        "ru": "📍 Zarra Resort & SPA\n{addr}Точка на карте — выше 👆\nНужна помощь с дорогой? +998 87 591 33 30",
-        "uz": "📍 Zarra Resort & SPA\n{addr}Xarita nuqtasi — yuqorida 👆\nYo‘l kerakmi? +998 87 591 33 30",
-        "en": "📍 Zarra Resort & SPA\n{addr}Map pin is above 👆\nNeed directions? +998 87 591 33 30"},
+        "ru": "📍 Zarra Resort & SPA\n{addr}Точка на карте — выше 👆\n"
+              "Совет: для точного маршрута открывайте 2ГИС (кнопка ниже) — Google иногда ведёт не туда.\n"
+              "Нужна помощь с дорогой? +998 87 591 33 30",
+        "uz": "📍 Zarra Resort & SPA\n{addr}Xarita nuqtasi — yuqorida 👆\n"
+              "Maslahat: aniq marshrut uchun 2GIS'ni oching (quyidagi tugma) — Google ba'zan noto‘g‘ri olib boradi.\n"
+              "Yo‘l kerakmi? +998 87 591 33 30",
+        "en": "📍 Zarra Resort & SPA\n{addr}Map pin is above 👆\n"
+              "Tip: use 2GIS for accurate directions (button below) — Google sometimes misleads.\n"
+              "Need directions? +998 87 591 33 30"},
     # --- Мастер брони ---
     "bk_start": {
         "ru": "Отлично, давайте забронируем! 🌿\nВыберите шале:",
@@ -1113,14 +1124,25 @@ def lead_keyboard(username: str | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# Карты. 2GIS — основной (в Узбекистане точнее; Google часто ведёт не туда).
+GIS_URL = "https://go.2gis.com/iob7Q"
+GOOGLE_URL = "https://maps.app.goo.gl/V8U9eX28Fuzgoshy9"
+
+
+def location_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗺 Открыть в 2ГИС (точно)", url=GIS_URL)],
+        [InlineKeyboardButton(text="📍 Google Maps", url=GOOGLE_URL)],
+    ])
+
+
 def links_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📸 Instagram",
                               url="https://instagram.com/zarraresort"),
          InlineKeyboardButton(text="📢 Канал",
                               url="https://t.me/zarraresort")],
-        [InlineKeyboardButton(text="📍 Локация",
-                              url="https://maps.app.goo.gl/V8U9eX28Fuzgoshy9")],
+        [InlineKeyboardButton(text="🗺 Как добраться (2ГИС)", url=GIS_URL)],
     ])
 
 
