@@ -469,6 +469,7 @@ def load_store() -> dict:
     data.setdefault("card", None)      # карта для предоплаты (текст: номер + имя)
     data.setdefault("pay_hours", 3)    # сколько часов на предоплату
     data.setdefault("waitlist", [])    # [{chat_key,chalet,date,slot,no,ts}]
+    data.setdefault("guests", {})      # CRM: {chat_id: {name,phone,bookings,confirmed,last_chalet,...}}
     return data
 
 
@@ -686,6 +687,14 @@ T = {
                "I'm the resort assistant. Tap a button below or just type your "
                "question — I'll reply in your language."),
     },
+    "welcome_back": {
+        "ru": "С возвращением, {name}! 🌿 Рады снова видеть вас в Zarra Resort & SPA.",
+        "uz": "Qaytganingizdan xursandmiz, {name}! 🌿 Zarra Resort & SPA sizni yana kutib oldi.",
+        "en": "Welcome back, {name}! 🌿 Great to see you again at Zarra Resort & SPA."},
+    "welcome_back_last": {
+        "ru": "В прошлый раз вы выбирали {chalet} — забронировать снова? 🙂",
+        "uz": "O‘tgan safar {chalet} ni tanlagandingiz — yana bron qilaymi? 🙂",
+        "en": "Last time you chose {chalet} — book it again? 🙂"},
     "choose_lang": {
         "ru": "Выберите язык 👇", "uz": "Tilni tanlang 👇", "en": "Choose a language 👇"},
     "lang_set": {
@@ -1211,6 +1220,36 @@ def is_relay_active(chat_key: str) -> bool:
     return bool(store.get("chats", {}).get(chat_key, {}).get("relay"))
 
 
+# --- CRM: профили гостей (персонализация) --------------------------------------
+def _chat_id_of(chat_key: str):
+    return chat_key.split(":")[-1] if chat_key else None
+
+
+def guest_profile(chat_id):
+    return store.get("guests", {}).get(str(chat_id))
+
+
+def update_guest(chat_key: str, lead: dict = None, confirmed: bool = False) -> None:
+    gid = _chat_id_of(chat_key)
+    if not gid:
+        return
+    g = store.setdefault("guests", {}).setdefault(gid, {})
+    now = tashkent_now().strftime("%Y-%m-%d %H:%M")
+    g.setdefault("first_ts", now)
+    g["last_ts"] = now
+    if lead:
+        if lead.get("name"):
+            g["name"] = lead["name"]
+        if lead.get("phone"):
+            g["phone"] = lead["phone"]
+        if lead.get("chalet"):
+            g["last_chalet"] = lead["chalet"]
+        g["bookings"] = g.get("bookings", 0) + 1
+    if confirmed:
+        g["confirmed"] = g.get("confirmed", 0) + 1
+    save_store()
+
+
 async def relay_to_group(chat_key: str, message: Message, text: str) -> None:
     """Пока диалог ведёт менеджер — пересылаем сообщения гостя в группу."""
     dest = store.get("leads_chat_id") or store.get("owner_id")
@@ -1256,6 +1295,7 @@ async def post_lead(lead: dict, chat_key: str, source: str, username: str | None
     if c:
         c["has_lead"] = True
     map_relay(sent.message_id, chat_key)   # менеджер может ответить reply на карточку
+    update_guest(chat_key, lead)           # CRM: запоминаем гостя
     save_store()
 
 
@@ -1351,6 +1391,14 @@ async def ask_ai(chat_key: str, user_text: str, lang: str = "ru"):
     if store.get("announce"):
         messages.append({"role": "system", "content":
                          "ОБЪЯВЛЕНИЕ/АКЦИЯ (упомяни, если уместно): " + store["announce"]})
+    prof = guest_profile(_chat_id_of(chat_key))
+    if prof and prof.get("name"):
+        pn = f"ГОСТЬ УЖЕ С НАМИ. Имя: {prof['name']}."
+        if prof.get("last_chalet"):
+            pn += f" В прошлый раз выбирал: {prof['last_chalet']}."
+        pn += (" Обращайся тепло и по имени, можешь предложить повторить прошлый выбор. "
+               "Ничего лишнего о нём не выдумывай.")
+        messages.append({"role": "system", "content": pn})
     messages += [{"role": t["role"], "content": t["text"]} for t in turns]
 
     def _call():
@@ -1628,8 +1676,16 @@ async def on_start(message: Message, command: CommandObject, state: FSMContext):
     if low.startswith("w-") and await _start_from_web(message, state, low, lang):
         return
 
-    await message.answer(L(lang, "greeting"), reply_markup=main_menu(lang))
-    await message.answer(L(lang, "choose_lang"), reply_markup=LANG_PICK_KB)
+    # Персонализация: вернувшегося гостя приветствуем лично.
+    prof = guest_profile(cid)
+    if prof and prof.get("name"):
+        greet = L(lang, "welcome_back", name=prof["name"])
+        if prof.get("last_chalet"):
+            greet += "\n" + L(lang, "welcome_back_last", chalet=prof["last_chalet"])
+        await message.answer(greet, reply_markup=main_menu(lang))
+    else:
+        await message.answer(L(lang, "greeting"), reply_markup=main_menu(lang))
+        await message.answer(L(lang, "choose_lang"), reply_markup=LANG_PICK_KB)
 
 
 @dp.message(Command("lang"))
@@ -2090,6 +2146,81 @@ async def cmd_chart(message: Message):
                                caption="📊 Загрузка за 14 дней")
 
 
+@dp.message(Command("dashboard"))
+async def cmd_dashboard(message: Message):
+    if not _is_staff(message):
+        return
+    await bot.send_chat_action(message.chat.id, "upload_photo")
+    img = make_dashboard()
+    if img:
+        await message.answer_photo(BufferedInputFile(img, "dashboard.png"),
+                                   caption="📊 Панель владельца · 30 дней")
+    chart = make_stats_chart()
+    if chart:
+        await message.answer_photo(BufferedInputFile(chart, "chart.png"),
+                                   caption="📈 Динамика · 14 дней")
+    if not img and not chart:
+        await message.answer("Панель недоступна (нет Pillow на сервере).")
+
+
+async def revenue_advice(summary: str) -> str:
+    sysmsg = ("Ты — опытный revenue-менеджер загородного премиум-резорта в Узбекистане. "
+              "На основе данных дай 4–6 КОНКРЕТНЫХ практичных рекомендаций по ценам и загрузке "
+              "(что поднять/снизить, где акция, какой слот/шале продвигать, как поднять конверсию). "
+              "Кратко, по-деловому, на русском, нумерованным списком. Только по данным, без общих фраз.")
+    msgs = [{"role": "system", "content": sysmsg}, {"role": "user", "content": summary}]
+
+    def _call():
+        return ai.chat.completions.create(model=MODEL, messages=msgs,
+                                          temperature=0.4, max_tokens=650)
+    try:
+        r = await asyncio.to_thread(_call)
+        return (r.choices[0].message.content or "").strip() or "Недостаточно данных."
+    except Exception as e:
+        log.warning(f"revenue ai: {e}")
+        return "Не удалось получить рекомендации, попробуйте позже."
+
+
+@dp.message(Command("revenue"))
+async def cmd_revenue(message: Message):
+    if not _is_staff(message):
+        return
+    await bot.send_chat_action(message.chat.id, "typing")
+    now = tashkent_now()
+    w30 = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)}
+    leads = [l for l in store.get("leads", []) if l.get("day") in w30]
+    k = compute_kpis(30)
+    ch_c = sum(1 for l in leads if (l.get("data") or {}).get("chalet_key") == "comfort")
+    ch_l = sum(1 for l in leads if (l.get("data") or {}).get("chalet_key") == "lux")
+    sl = {s: sum(1 for l in leads if str((l.get("data") or {}).get("slot_no")) == s)
+          for s in ("1", "2", "3")}
+    we_n = wd_n = 0
+    for l in leads:
+        iso = (l.get("data") or {}).get("date_iso")
+        if not iso:
+            continue
+        try:
+            if is_surcharge_day(datetime.strptime(iso, "%Y-%m-%d")):
+                we_n += 1
+            else:
+                wd_n += 1
+        except Exception:
+            pass
+    up = sum(1 for b in store.get("booked", []) if b.get("date", "") >= now.strftime("%Y-%m-%d"))
+    prices = "; ".join(f"{ch} слот{s}: будни {get_price(ch, s, False)} / вых {get_price(ch, s, True)}"
+                       for ch in ("comfort", "lux") for s in ("1", "2", "3"))
+    summary = (
+        f"Данные резорта Zarra за 30 дней. Обращений {k['inq']}, заявок {k['leads']}, "
+        f"подтверждено {k['conf']}, конверсия {k['conv']}%, выручка ~{k['revenue']} сум, "
+        f"средний чек ~{k['avg_check']} сум, рейтинг {k['rating']}. "
+        f"Спрос по шале: Комфорт {ch_c}, Люкс {ch_l}. По слотам: день {sl['1']}, ночь {sl['2']}, "
+        f"полный день {sl['3']}. Будни {wd_n} против выходных {we_n}. "
+        f"Занятых вилл на ближайшие 14 дней: {up}. Всего вилл: Комфорт 9, Люкс 3. "
+        f"Текущие цены (сум): {prices}.")
+    advice = await revenue_advice(summary)
+    await message.answer("🧠 Ревеню-подсказки (AI-анализ за 30 дней)\n\n" + advice)
+
+
 @dp.message(Command("report"))
 async def cmd_report(message: Message):
     if not _is_staff(message):
@@ -2325,6 +2456,41 @@ def _brand_font(sz, bold=False, serif=True):
     return ImageFont.load_default()
 
 
+def lead_revenue(lead: dict):
+    """Оценка выручки подтверждённой заявки (по ценам). None если не посчитать."""
+    d = lead.get("data", {})
+    if not (d.get("chalet_key") and d.get("slot_no") and d.get("date_iso")):
+        return None
+    try:
+        we = is_surcharge_day(datetime.strptime(d["date_iso"], "%Y-%m-%d"))
+        return price_num(d["chalet_key"], d["slot_no"], we)
+    except Exception:
+        return None
+
+
+def compute_kpis(days: int) -> dict:
+    """Метрики за последние N дней."""
+    now = tashkent_now()
+    window = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)}
+    daily = store.get("daily", {})
+    leads = [l for l in store.get("leads", []) if l.get("day") in window]
+    conf = [l for l in leads if l.get("status") == "confirmed"]
+    inq = sum(daily.get(d, {}).get("inq", 0) for d in window)
+    revenue = sum(v for v in (lead_revenue(l) for l in conf) if v)
+    ratings = [l["rating"] for l in leads if l.get("rating")]
+    ch = Counter((l.get("data") or {}).get("chalet", "") for l in leads
+                 if (l.get("data") or {}).get("chalet"))
+    src = Counter(l.get("channel") or "не указан" for l in leads)
+    return {
+        "days": days, "inq": inq, "leads": len(leads), "conf": len(conf),
+        "conv": round(100 * len(leads) / inq) if inq else 0,
+        "revenue": revenue, "avg_check": (revenue // len(conf)) if conf else 0,
+        "rating": round(sum(ratings) / len(ratings), 1) if ratings else None,
+        "top_chalet": ch.most_common(1)[0][0] if ch else "—",
+        "top_src": src.most_common(1)[0][0] if src else "—",
+    }
+
+
 def make_stats_chart():
     """Брендовый график загрузки за 14 дней. Возвращает PNG-байты или None."""
     try:
@@ -2404,6 +2570,91 @@ def make_stats_chart():
         return None
 
 
+def _fmt_money(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f}".replace(".", ",").rstrip("0").rstrip(",") + " млн"
+    return f"{n:,}".replace(",", " ")
+
+
+def make_dashboard():
+    """Брендовая панель владельца с ключевыми метриками. PNG-байты или None."""
+    try:
+        from PIL import Image, ImageDraw, ImageFilter
+    except Exception as e:
+        log.warning(f"PIL недоступен: {e}")
+        return None
+    try:
+        k30 = compute_kpis(30)
+        k7 = compute_kpis(7)
+        W, H = 1080, 1140
+        GOLD, CREAM, MUTED = (216, 184, 120), (241, 234, 217), (150, 141, 123)
+        base = Image.new("RGB", (W, H), (10, 11, 8))
+        glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gd.ellipse([W * 0.15, -280, W * 0.85, 300], fill=(216, 184, 120, 55))
+        base = Image.alpha_composite(base.convert("RGBA"),
+                                     glow.filter(ImageFilter.GaussianBlur(150))).convert("RGB")
+        d = ImageDraw.Draw(base)
+        d.rounded_rectangle([32, 32, W - 32, H - 32], radius=40, outline=GOLD, width=2)
+
+        def ctext(y, s, f, fill, ls=0):
+            w = sum(d.textlength(ch, font=f) + ls for ch in s) - (ls if s else 0)
+            x = (W - w) / 2
+            for ch in s:
+                d.text((x, y), ch, font=f, fill=fill)
+                x += d.textlength(ch, font=f) + ls
+
+        ctext(78, "ZARRA", _brand_font(72, bold=True), CREAM, ls=12)
+        ctext(180, "ПАНЕЛЬ ВЛАДЕЛЬЦА · 30 ДНЕЙ", _brand_font(26, serif=False), GOLD, ls=4)
+        d.line([160, 235, W - 160, 235], fill=(70, 62, 48), width=1)
+
+        # Плитки KPI (2 колонки).
+        tiles = [
+            ("Выручка (оценка)", _fmt_money(k30["revenue"]) + " сум", GOLD),
+            ("Подтверждено", str(k30["conf"]), CREAM),
+            ("Заявок", str(k30["leads"]), CREAM),
+            ("Обращений", str(k30["inq"]), CREAM),
+            ("Конверсия", f"{k30['conv']}%", CREAM),
+            ("Средний чек", _fmt_money(k30["avg_check"]) + " сум", CREAM),
+            ("Рейтинг", (f"{k30['rating']} / 5" if k30["rating"] else "—"), GOLD),
+            ("Чаще берут", str(k30["top_chalet"]), CREAM),
+        ]
+        tw, th, gap = (W - 100) // 2, 150, 20
+        x0, y0 = 50, 280
+        lf, vf = _brand_font(26, serif=False), _brand_font(46, bold=True)
+        for i, (label, value, col) in enumerate(tiles):
+            r, c = divmod(i, 2)
+            x = x0 + c * (tw + gap)
+            y = y0 + r * (th + gap)
+            d.rounded_rectangle([x, y, x + tw, y + th], radius=20,
+                                fill=(22, 20, 16), outline=(60, 54, 42), width=1)
+            d.text((x + 26, y + 24), label, font=lf, fill=MUTED)
+            vv = value if d.textlength(value, font=vf) < tw - 50 else value
+            vfx = vf
+            while d.textlength(vv, font=vfx) > tw - 48 and vfx.size > 26:
+                vfx = _brand_font(vfx.size - 3, bold=True)
+            d.text((x + 26, y + 68), vv, font=vfx, fill=col)
+
+        # Мини-строка «за 7 дней».
+        y7 = y0 + 4 * (th + gap) + 10
+        line7 = (f"7 дней:  выручка {_fmt_money(k7['revenue'])}  ·  заявок {k7['leads']}  ·  "
+                 f"подтв. {k7['conf']}  ·  конв. {k7['conv']}%")
+        sz = 28
+        sf = _brand_font(sz, serif=False)
+        while sz > 18 and d.textlength(line7, font=sf) > W - 100:
+            sz -= 2
+            sf = _brand_font(sz, serif=False)
+        ctext(y7, line7, sf, CREAM)
+        ctext(H - 96, "Источник №1: " + str(k30["top_src"]),
+              _brand_font(26, serif=False), MUTED)
+        buf = BytesIO()
+        base.save(buf, "PNG")
+        return buf.getvalue()
+    except Exception as e:
+        log.warning(f"dashboard render error: {e}")
+        return None
+
+
 # =============================================================================
 #  КНОПКИ (callback) — заявки и выбор галереи
 # =============================================================================
@@ -2447,6 +2698,7 @@ async def on_lead_action(cb: CallbackQuery):
         # Красивая карточка-подтверждение гостю.
         ck = lead_rec.get("chat_key") if lead_rec else None
         if ck:
+            update_guest(ck, confirmed=True)   # CRM: засчитали визит
             glang = _guest_lang(ck)
             img = make_confirmation_card(lead_rec.get("data", {}), glang)
             if img:
@@ -3541,6 +3793,8 @@ PUBLIC_COMMANDS = [
 STAFF_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="stats", description="Статистика заявок"),
     BotCommand(command="report", description="Отчёт и конверсия"),
+    BotCommand(command="dashboard", description="Панель владельца"),
+    BotCommand(command="revenue", description="AI-подсказки по ценам"),
     BotCommand(command="chart", description="График загрузки"),
     BotCommand(command="busy", description="Занятые даты"),
     BotCommand(command="prices", description="Цены (изменить)"),
