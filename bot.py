@@ -27,6 +27,7 @@ import re
 import csv
 import json
 import time
+import secrets
 import asyncio
 import logging
 import tempfile
@@ -35,6 +36,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from collections import Counter, deque
 
+from aiohttp import web
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart, CommandObject
@@ -470,6 +472,8 @@ def load_store() -> dict:
     data.setdefault("pay_hours", 3)    # сколько часов на предоплату
     data.setdefault("waitlist", [])    # [{chat_key,chalet,date,slot,no,ts}]
     data.setdefault("guests", {})      # CRM: {chat_id: {name,phone,bookings,confirmed,last_chalet,...}}
+    data.setdefault("dash_token", None)  # секрет доступа к веб-панели
+    data.setdefault("dash_host", None)   # публичный IP сервера (определяется сам)
     return data
 
 
@@ -484,6 +488,11 @@ def save_store() -> None:
 store = load_store()
 collecting: dict[int, str] = {}        # загрузка галереи: user_id -> категория
 awaiting_location: set[int] = set()    # ждём геоточку от владельца
+
+DASH_PORT = int(os.getenv("DASH_PORT", "8090"))
+if not store.get("dash_token"):
+    store["dash_token"] = secrets.token_urlsafe(16)
+    save_store()
 
 
 # --- Администраторы (получатели сводки, доступ к статистике) --------------------
@@ -2491,6 +2500,73 @@ def compute_kpis(days: int) -> dict:
     }
 
 
+def forecast_next(n: int = 14) -> dict:
+    """Прогноз заявок/выручки на N дней вперёд (сезонность по дням недели)."""
+    now = tashkent_now()
+    daily = store.get("daily", {})
+    leads = store.get("leads", [])
+    inq_wd = {i: [] for i in range(7)}
+    led_wd = {i: [] for i in range(7)}
+    for k in range(1, 57):     # история за 8 недель
+        d = now - timedelta(days=k)
+        ds = d.strftime("%Y-%m-%d")
+        inq_wd[d.weekday()].append(daily.get(ds, {}).get("inq", 0))
+        led_wd[d.weekday()].append(sum(1 for l in leads if l.get("day") == ds))
+
+    def avg(lst):
+        return sum(lst) / len(lst) if lst else 0.0
+    all_led = avg([v for lst in led_wd.values() for v in lst])
+    all_inq = avg([v for lst in inq_wd.values() for v in lst])
+    k30 = compute_kpis(30)
+    conf_rate = (k30["conf"] / k30["leads"]) if k30["leads"] else 0.0
+    avg_check = k30["avg_check"]
+    days, tot_leads, tot_rev = [], 0.0, 0.0
+    for i in range(n):
+        d = now + timedelta(days=i + 1)
+        pl = avg(led_wd[d.weekday()]) or all_led
+        pi = avg(inq_wd[d.weekday()]) or all_inq
+        days.append({"date": d.strftime("%Y-%m-%d"), "label": f"{d.day:02d}.{d.month:02d}",
+                     "inq": round(pi, 1), "leads": round(pl, 1)})
+        tot_leads += pl
+        tot_rev += pl * conf_rate * avg_check
+    return {"days": days, "total_leads": round(tot_leads),
+            "total_revenue": int(tot_rev), "conf_rate": round(conf_rate * 100)}
+
+
+def dashboard_data() -> dict:
+    """JSON для веб-панели."""
+    now = tashkent_now()
+    daily = store.get("daily", {})
+    leads = store.get("leads", [])
+    hist = []
+    for i in range(13, -1, -1):
+        d = now - timedelta(days=i)
+        ds = d.strftime("%Y-%m-%d")
+        hist.append({"label": f"{d.day:02d}.{d.month:02d}",
+                     "inq": daily.get(ds, {}).get("inq", 0),
+                     "leads": sum(1 for l in leads if l.get("day") == ds)})
+    fc = forecast_next(14)
+    w30 = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)}
+    src = Counter((l.get("channel") or "не указан") for l in leads if l.get("day") in w30)
+    st = {"new": "🆕 новая", "in_progress": "🙋 в работе",
+          "confirmed": "✅ подтв.", "rejected": "❌ откл."}
+    recent = []
+    for l in reversed(leads[-12:]):
+        d = l.get("data", {})
+        recent.append({"no": l.get("no"), "name": d.get("name", ""),
+                       "chalet": d.get("chalet", ""), "date": d.get("date", ""),
+                       "status": st.get(l.get("status", ""), l.get("status", "")),
+                       "ts": l.get("ts", "")})
+    return {
+        "k7": compute_kpis(7), "k30": compute_kpis(30),
+        "hist": hist, "forecast": [{"label": x["label"], "leads": x["leads"]} for x in fc["days"]],
+        "fc_leads": fc["total_leads"], "fc_revenue": fc["total_revenue"], "fc_conf": fc["conf_rate"],
+        "guests": len(store.get("guests", {})),
+        "sources": src.most_common(6), "recent": recent,
+        "updated": now.strftime("%d.%m.%Y %H:%M"),
+    }
+
+
 def make_stats_chart():
     """Брендовый график загрузки за 14 дней. Возвращает PNG-байты или None."""
     try:
@@ -3794,7 +3870,9 @@ STAFF_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="stats", description="Статистика заявок"),
     BotCommand(command="report", description="Отчёт и конверсия"),
     BotCommand(command="dashboard", description="Панель владельца"),
+    BotCommand(command="dashboard_web", description="Живая веб-панель"),
     BotCommand(command="revenue", description="AI-подсказки по ценам"),
+    BotCommand(command="forecast", description="Прогноз на 14 дней"),
     BotCommand(command="chart", description="График загрузки"),
     BotCommand(command="busy", description="Занятые даты"),
     BotCommand(command="prices", description="Цены (изменить)"),
@@ -3820,6 +3898,140 @@ async def apply_commands() -> None:
             log.warning(f"staff commands {uid}: {e}")
 
 
+# =============================================================================
+#  ЖИВАЯ ВЕБ-ПАНЕЛЬ ВЛАДЕЛЬЦА (aiohttp, обновляется сама)
+# =============================================================================
+DASH_HTML = """<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZARRA — Панель</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+:root{--bg:#0a0b08;--gold:#d8b878;--gold2:#e8c87f;--cream:#f1ead9;--card:rgba(255,255,255,.05);--bd:rgba(255,255,255,.10);--mut:rgba(241,234,217,.55)}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(120% 60% at 50% 0,rgba(216,184,120,.14),transparent 60%),var(--bg);color:var(--cream);font-family:-apple-system,Segoe UI,Roboto,sans-serif;padding:20px}
+.wrap{max-width:1100px;margin:0 auto}
+h1{font-weight:800;letter-spacing:8px;text-align:center;margin:6px 0 0}
+.sub{text-align:center;color:var(--gold);letter-spacing:3px;font-size:12px;text-transform:uppercase}
+.upd{text-align:center;color:var(--mut);font-size:12px;margin:4px 0 18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:16px;backdrop-filter:blur(12px)}
+.card .l{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:1px}
+.card .v{font-size:26px;font-weight:700;margin-top:6px}
+.card .v.g{color:var(--gold2)}
+.row{display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-top:14px}
+@media(max-width:760px){.row{grid-template-columns:1fr}}
+.panel{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:16px}
+.panel h3{margin:0 0 10px;font-weight:600;color:var(--gold2)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{text-align:left;padding:7px 6px;border-bottom:1px solid rgba(255,255,255,.06)}
+th{color:var(--mut);font-weight:500}
+</style></head><body><div class="wrap">
+<h1>ZARRA</h1><div class="sub">Панель владельца · live</div><div class="upd" id="upd"></div>
+<div class="grid" id="kpi"></div>
+<div class="row">
+<div class="panel"><h3>Динамика и прогноз (заявки)</h3><canvas id="c1" height="150"></canvas></div>
+<div class="panel"><h3>Источники (30д)</h3><canvas id="c2" height="150"></canvas></div>
+</div>
+<div class="panel" style="margin-top:14px"><h3>Последние заявки</h3><table id="rec"></table></div>
+</div>
+<script>
+const T=new URLSearchParams(location.search).get('token')||'';
+let ch1,ch2;
+function money(n){return n>=1e6?(n/1e6).toFixed(1).replace('.',',')+' млн':(n||0).toLocaleString('ru-RU')}
+function kpi(k){const K=k.k30;return [
+ ['Выручка·30д',money(K.revenue)+' сум',1],['Подтверждено',K.conf,0],['Заявок',K.leads,0],
+ ['Обращений',K.inq,0],['Конверсия',K.conv+'%',0],['Средний чек',money(K.avg_check)+' сум',0],
+ ['Рейтинг',K.rating?K.rating+' / 5':'—',1],['Гостей в базе',k.guests,0],
+ ['Прогноз заявок·14д',k.fc_leads,1],['Прогноз выручки·14д',money(k.fc_revenue)+' сум',1]]}
+async function load(){
+ try{const r=await fetch('/api/data?token='+encodeURIComponent(T));if(!r.ok){document.getElementById('upd').textContent='Нет доступа';return}
+ const d=await r.json();document.getElementById('upd').textContent='обновлено '+d.updated+' · автообновление 30с';
+ document.getElementById('kpi').innerHTML=kpi(d).map(x=>`<div class="card"><div class="l">${x[0]}</div><div class="v ${x[2]?'g':''}">${x[1]}</div></div>`).join('');
+ const labels=d.hist.map(h=>h.label).concat(d.forecast.map(f=>f.label));
+ const fact=d.hist.map(h=>h.leads).concat(d.forecast.map(_=>null));
+ const inq=d.hist.map(h=>h.inq).concat(d.forecast.map(_=>null));
+ const fc=d.hist.map(_=>null); if(d.hist.length)fc[d.hist.length-1]=d.hist[d.hist.length-1].leads; d.forecast.forEach(f=>fc.push(f.leads));
+ const ds=[{label:'Обращения',data:inq,borderColor:'rgba(150,141,123,.9)',backgroundColor:'rgba(150,141,123,.15)',tension:.3},
+  {label:'Заявки',data:fact,borderColor:'#e8c87f',backgroundColor:'rgba(216,184,120,.15)',tension:.3},
+  {label:'Прогноз',data:fc,borderColor:'#e8c87f',borderDash:[6,4],tension:.3,pointRadius:0}];
+ if(ch1)ch1.destroy();ch1=new Chart(document.getElementById('c1'),{type:'line',data:{labels,datasets:ds},options:{plugins:{legend:{labels:{color:'#cfc7b4'}}},scales:{x:{ticks:{color:'#9b8f78'}},y:{ticks:{color:'#9b8f78'}}}}});
+ const sl=d.sources.map(s=>s[0]),sv=d.sources.map(s=>s[1]);
+ if(ch2)ch2.destroy();ch2=new Chart(document.getElementById('c2'),{type:'doughnut',data:{labels:sl,datasets:[{data:sv,backgroundColor:['#e8c87f','#b99a5e','#8a7245','#5f5030','#cfc7b4','#7a6a4a']}]},options:{plugins:{legend:{labels:{color:'#cfc7b4'}}}}});
+ document.getElementById('rec').innerHTML='<tr><th>#</th><th>Имя</th><th>Шале</th><th>Дата</th><th>Статус</th></tr>'+d.recent.map(r=>`<tr><td>${r.no}</td><td>${r.name||'—'}</td><td>${r.chalet||'—'}</td><td>${r.date||'—'}</td><td>${r.status||''}</td></tr>`).join('');
+ }catch(e){document.getElementById('upd').textContent='Ошибка загрузки'}
+}
+load();setInterval(load,30000);
+</script></body></html>"""
+
+
+async def _dash_page(request):
+    if request.query.get("token") != store.get("dash_token"):
+        return web.Response(text="Доступ запрещён", status=403)
+    return web.Response(text=DASH_HTML, content_type="text/html")
+
+
+async def _dash_api(request):
+    if request.query.get("token") != store.get("dash_token"):
+        return web.json_response({"error": "forbidden"}, status=403)
+    return web.json_response(dashboard_data())
+
+
+async def start_web():
+    try:
+        app = web.Application()
+        app.router.add_get("/", _dash_page)
+        app.router.add_get("/api/data", _dash_api)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        await web.TCPSite(runner, "0.0.0.0", DASH_PORT).start()
+        log.info(f"Веб-панель запущена на порту {DASH_PORT}")
+    except Exception as e:
+        log.warning(f"web dashboard: {e}")
+
+
+async def detect_public_ip():
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as s:
+            async with s.get("https://api.ipify.org",
+                             timeout=aiohttp.ClientTimeout(total=8)) as r:
+                ip = (await r.text()).strip()
+                if ip and store.get("dash_host") != ip:
+                    store["dash_host"] = ip
+                    save_store()
+    except Exception as e:
+        log.warning(f"ip detect: {e}")
+
+
+@dp.message(Command("dashboard_web"))
+async def cmd_dashboard_web(message: Message):
+    if message.chat.type != "private" or not _is_owner(message):
+        return
+    host = store.get("dash_host") or "ВАШ-IP-СЕРВЕРА"
+    url = f"http://{host}:{DASH_PORT}/?token={store.get('dash_token')}"
+    await message.answer(
+        "🖥 Живая веб-панель владельца (обновляется сама):\n\n" + url +
+        "\n\nОткрой в браузере на компьютере. Ссылку не показывай посторонним "
+        f"(в ней токен доступа).\nЕсли не открывается — нужно открыть порт {DASH_PORT} "
+        "на сервере (скажи мне — помогу).")
+
+
+@dp.message(Command("forecast"))
+async def cmd_forecast(message: Message):
+    if not _is_staff(message):
+        return
+    fc = forecast_next(14)
+    strong = max(fc["days"], key=lambda x: x["leads"])
+    weak = min(fc["days"], key=lambda x: x["leads"])
+    await message.answer(
+        "🔮 Прогноз на 14 дней (по вашим данным)\n\n"
+        f"• Ожидаем заявок: ~{fc['total_leads']}\n"
+        f"• Ожидаемая выручка: ~{_fmt_money(fc['total_revenue'])} сум\n"
+        f"• Прогнозная конверсия: {fc['conf_rate']}%\n\n"
+        f"📈 Сильный день: {strong['label']} (~{strong['leads']} заявок)\n"
+        f"📉 Слабый день: {weak['label']} (~{weak['leads']}) — хороший день для акции\n\n"
+        "Точность растёт по мере накопления данных.")
+
+
 async def main():
     global BOT_ID, BOT_USERNAME
     try:
@@ -3829,8 +4041,10 @@ async def main():
     except Exception as e:
         log.warning(f"get_me: {e}")
     await apply_commands()
+    await start_web()
+    asyncio.create_task(detect_public_ip())
     asyncio.create_task(scheduler())
-    log.info("Бот запущен (v8). Останови командой Ctrl+C.")
+    log.info("Бот запущен (v9). Останови командой Ctrl+C.")
     await dp.start_polling(bot)
 
 
