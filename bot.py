@@ -2260,6 +2260,15 @@ async def cmd_dashboard_web(message: Message):
         "на сервере (скажи мне — помогу).")
 
 
+@dp.message(Command("backup"))
+async def cmd_backup(message: Message):
+    if message.chat.type != "private" or not _is_owner(message):
+        return
+    await send_backup_to_owner()
+    await message.answer("🛟 Отправил свежую копию базы выше. Она приходит и сама — "
+                         "каждое утро.")
+
+
 @dp.message(Command("report"))
 async def cmd_report(message: Message):
     if not _is_staff(message):
@@ -3716,6 +3725,21 @@ async def send_daily_digest() -> None:
             log.warning(f"digest error ({dest}): {e}")
 
 
+async def send_backup_to_owner() -> None:
+    """Раз в день шлёт файл базы владельцу в личку — резерв вне сервера."""
+    dest = store.get("owner_id")
+    if not dest or not STORE_PATH.exists():
+        return
+    day = tashkent_now().strftime("%Y-%m-%d")
+    try:
+        await bot.send_document(
+            dest, FSInputFile(str(STORE_PATH), filename=f"zarra-backup-{day}.json"),
+            caption=("🛟 Резервная копия базы (заявки, гости, настройки).\n"
+                     "Сохрани на всякий случай — из неё можно восстановить бота."))
+    except Exception as e:
+        log.warning(f"owner backup error: {e}")
+
+
 async def send_to_guest(chat_key: str, text: str, reply_markup=None) -> bool:
     c = store.get("chats", {}).get(chat_key)
     if not c or not c.get("chat_id"):
@@ -3882,6 +3906,7 @@ async def scheduler() -> None:
             if now.hour == 9 and last_morning_day != day:
                 backup_store()
                 await send_daily_digest()
+                await send_backup_to_owner()
                 await run_reminders()
                 await run_reviews()
                 last_morning_day = day
