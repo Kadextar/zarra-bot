@@ -2230,6 +2230,36 @@ async def cmd_revenue(message: Message):
     await message.answer("🧠 Ревеню-подсказки (AI-анализ за 30 дней)\n\n" + advice)
 
 
+@dp.message(Command("forecast"))
+async def cmd_forecast(message: Message):
+    if not _is_staff(message):
+        return
+    fc = forecast_next(14)
+    strong = max(fc["days"], key=lambda x: x["leads"])
+    weak = min(fc["days"], key=lambda x: x["leads"])
+    await message.answer(
+        "🔮 Прогноз на 14 дней (по вашим данным)\n\n"
+        f"• Ожидаем заявок: ~{fc['total_leads']}\n"
+        f"• Ожидаемая выручка: ~{_fmt_money(fc['total_revenue'])} сум\n"
+        f"• Прогнозная конверсия: {fc['conf_rate']}%\n\n"
+        f"📈 Сильный день: {strong['label']} (~{strong['leads']} заявок)\n"
+        f"📉 Слабый день: {weak['label']} (~{weak['leads']}) — хороший день для акции\n\n"
+        "Точность растёт по мере накопления данных.")
+
+
+@dp.message(Command("dashboard_web"))
+async def cmd_dashboard_web(message: Message):
+    if message.chat.type != "private" or not _is_owner(message):
+        return
+    host = store.get("dash_host") or "ВАШ-IP-СЕРВЕРА"
+    url = f"http://{host}:{DASH_PORT}/?token={store.get('dash_token')}"
+    await message.answer(
+        "🖥 Живая веб-панель владельца (обновляется сама):\n\n" + url +
+        "\n\nОткрой в браузере на компьютере. Ссылку не показывай посторонним "
+        f"(в ней токен доступа).\nЕсли не открывается — нужно открыть порт {DASH_PORT} "
+        "на сервере (скажи мне — помогу).")
+
+
 @dp.message(Command("report"))
 async def cmd_report(message: Message):
     if not _is_staff(message):
@@ -4000,36 +4030,6 @@ async def detect_public_ip():
                     save_store()
     except Exception as e:
         log.warning(f"ip detect: {e}")
-
-
-@dp.message(Command("dashboard_web"))
-async def cmd_dashboard_web(message: Message):
-    if message.chat.type != "private" or not _is_owner(message):
-        return
-    host = store.get("dash_host") or "ВАШ-IP-СЕРВЕРА"
-    url = f"http://{host}:{DASH_PORT}/?token={store.get('dash_token')}"
-    await message.answer(
-        "🖥 Живая веб-панель владельца (обновляется сама):\n\n" + url +
-        "\n\nОткрой в браузере на компьютере. Ссылку не показывай посторонним "
-        f"(в ней токен доступа).\nЕсли не открывается — нужно открыть порт {DASH_PORT} "
-        "на сервере (скажи мне — помогу).")
-
-
-@dp.message(Command("forecast"))
-async def cmd_forecast(message: Message):
-    if not _is_staff(message):
-        return
-    fc = forecast_next(14)
-    strong = max(fc["days"], key=lambda x: x["leads"])
-    weak = min(fc["days"], key=lambda x: x["leads"])
-    await message.answer(
-        "🔮 Прогноз на 14 дней (по вашим данным)\n\n"
-        f"• Ожидаем заявок: ~{fc['total_leads']}\n"
-        f"• Ожидаемая выручка: ~{_fmt_money(fc['total_revenue'])} сум\n"
-        f"• Прогнозная конверсия: {fc['conf_rate']}%\n\n"
-        f"📈 Сильный день: {strong['label']} (~{strong['leads']} заявок)\n"
-        f"📉 Слабый день: {weak['label']} (~{weak['leads']}) — хороший день для акции\n\n"
-        "Точность растёт по мере накопления данных.")
 
 
 async def main():
