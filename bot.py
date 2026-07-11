@@ -1259,6 +1259,25 @@ def update_guest(chat_key: str, lead: dict = None, confirmed: bool = False) -> N
     save_store()
 
 
+def touch_user(message: Message) -> None:
+    """Реестр пользователей: кто есть кто (профиль Telegram + активность)."""
+    u = message.from_user
+    if not u:
+        return
+    gid = str(u.id)
+    g = store.setdefault("guests", {}).setdefault(gid, {})
+    now = tashkent_now().strftime("%Y-%m-%d %H:%M")
+    g.setdefault("first_ts", now)
+    g["last_ts"] = now
+    if u.first_name:
+        g["tg_name"] = u.first_name
+    if u.username:
+        g["username"] = u.username
+    g["lang"] = get_lang(u.id)
+    g["msgs"] = g.get("msgs", 0) + 1
+    save_store()
+
+
 async def relay_to_group(chat_key: str, message: Message, text: str) -> None:
     """Пока диалог ведёт менеджер — пересылаем сообщения гостя в группу."""
     dest = store.get("leads_chat_id") or store.get("owner_id")
@@ -1661,6 +1680,7 @@ async def _start_from_web(message: Message, state: FSMContext,
 async def on_start(message: Message, command: CommandObject, state: FSMContext):
     if message.chat.type != "private":
         return
+    touch_user(message)
     if capture_admin(message):
         await apply_commands()
     cid = message.chat.id
@@ -2363,6 +2383,79 @@ async def cmd_export(message: Message):
     except Exception as e:
         log.warning(f"export error: {e}")
         await message.answer("Не удалось отправить файл.")
+
+
+@dp.message(Command("users"))
+async def cmd_users(message: Message):
+    if not _is_staff(message):
+        return
+    users = store.get("guests", {})
+    if not users:
+        await message.answer("Пользователей пока нет.")
+        return
+    now = tashkent_now()
+    d7 = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+    total = len(users)
+    active7 = sum(1 for g in users.values() if (g.get("last_ts") or "") >= d7)
+    booked = sum(1 for g in users.values() if g.get("bookings"))
+    recent = sorted(users.items(), key=lambda kv: kv[1].get("last_ts", ""), reverse=True)[:15]
+    lines = ["👥 Пользователи бота\n",
+             f"Всего: {total} · активны за 7 дней: {active7} · с бронями: {booked}\n",
+             "Последние:"]
+    for gid, g in recent:
+        nm = g.get("tg_name") or g.get("name") or "—"
+        un = f"@{g['username']} " if g.get("username") else ""
+        lines.append(f"• {nm} {un}({gid}) — сообщений {g.get('msgs', 0)}, "
+                     f"броней {g.get('bookings', 0)}, был {g.get('last_ts', '—')}")
+    lines.append("\nПодробнее: /user <id>")
+    await message.answer("\n".join(lines))
+    # CSV
+    path = Path(tempfile.gettempdir()) / "zarra_users.csv"
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["id", "Имя (Telegram)", "Имя в брони", "username", "язык",
+                    "сообщений", "заявок", "подтв.", "телефон", "последнее шале",
+                    "первый визит", "последняя активность"])
+        for gid, g in sorted(users.items(), key=lambda kv: kv[1].get("last_ts", ""), reverse=True):
+            w.writerow([gid, g.get("tg_name", ""), g.get("name", ""),
+                        g.get("username", ""), g.get("lang", ""), g.get("msgs", 0),
+                        g.get("bookings", 0), g.get("confirmed", 0), g.get("phone", ""),
+                        g.get("last_chalet", ""), g.get("first_ts", ""), g.get("last_ts", "")])
+    try:
+        await bot.send_document(message.chat.id, FSInputFile(str(path)),
+                                caption=f"📄 Пользователи: {total} чел.")
+    except Exception as e:
+        log.warning(f"users csv: {e}")
+
+
+@dp.message(Command("user"))
+async def cmd_user(message: Message):
+    if not _is_staff(message):
+        return
+    arg = (message.text or "").partition(" ")[2].strip().lstrip("@")
+    g = store.get("guests", {}).get(arg)
+    if not g:
+        # поиск по username, если ввели ник
+        for gid, gg in store.get("guests", {}).items():
+            if (gg.get("username") or "").lower() == arg.lower():
+                g, arg = gg, gid
+                break
+    if not g:
+        await message.answer("Не нашёл. Формат: /user 123456789 (или /user @username)")
+        return
+    un = f"@{g['username']}" if g.get("username") else "—"
+    await message.answer(
+        f"👤 Пользователь {arg}\n\n"
+        f"Имя (Telegram): {g.get('tg_name', '—')}\n"
+        f"Имя в брони: {g.get('name', '—')}\n"
+        f"Username: {un}\n"
+        f"Язык: {g.get('lang', '—')}\n"
+        f"Телефон: {g.get('phone', '—')}\n"
+        f"Сообщений: {g.get('msgs', 0)}\n"
+        f"Заявок: {g.get('bookings', 0)} · подтверждено: {g.get('confirmed', 0)}\n"
+        f"Последнее шале: {g.get('last_chalet', '—')}\n"
+        f"Первый визит: {g.get('first_ts', '—')}\n"
+        f"Последняя активность: {g.get('last_ts', '—')}")
 
 
 # =============================================================================
@@ -3547,6 +3640,7 @@ async def on_webapp_data(message: Message):
 async def on_direct_message(message: Message):
     if message.chat.type != "private":
         return
+    touch_user(message)
     if capture_admin(message):
         await apply_commands()
     if is_rate_limited(message.chat.id):
@@ -3928,6 +4022,7 @@ STAFF_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="dashboard_web", description="Живая веб-панель"),
     BotCommand(command="revenue", description="AI-подсказки по ценам"),
     BotCommand(command="forecast", description="Прогноз на 14 дней"),
+    BotCommand(command="users", description="Пользователи (кто есть кто)"),
     BotCommand(command="chart", description="График загрузки"),
     BotCommand(command="busy", description="Занятые даты"),
     BotCommand(command="prices", description="Цены (изменить)"),
