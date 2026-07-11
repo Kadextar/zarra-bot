@@ -39,6 +39,9 @@ from collections import Counter, deque
 
 from aiohttp import web
 from dotenv import load_dotenv
+
+import storage
+from storage import STORE_PATH, load_store
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
@@ -428,7 +431,7 @@ def is_rate_limited(chat_id: int) -> bool:
     return False
 
 # --- Хранилище -----------------------------------------------------------------
-STORE_PATH = Path(__file__).parent / "media_store.json"
+# Чтение/запись базы вынесены в storage.py (load_store, save_store, STORE_PATH).
 
 CAT_NAMES = {"lux": "Шале Люкс", "comfort": "Шале Комфорт",
              "exterior": "Территория", "menu": "Меню ресторана"}
@@ -442,53 +445,15 @@ GALLERY_CAPTIONS = {
 }
 
 
-def load_store() -> dict:
-    if STORE_PATH.exists():
-        try:
-            data = json.loads(STORE_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
-    else:
-        data = {}
-    data.setdefault("owner_id", None)
-    data.setdefault("leads_chat_id", None)
-    data.setdefault("lead_counter", 0)
-    data.setdefault("leads", [])
-    data.setdefault("location", None)   # {"lat":..,"lon":..,"address":".."}
-    data.setdefault("galleries", {})
-    for c in ("lux", "comfort", "exterior", "menu"):
-        data["galleries"].setdefault(c, [])
-    data.setdefault("chats", {})   # follow-up: {chat_key: {chat_id, bcid, is_business, last_ts, last_day, has_lead, followed_up, relay}}
-    data.setdefault("daily", {})   # аналитика: {"YYYY-MM-DD": {"inq": N}}
-    data.setdefault("admins", [])      # [{"username":.., "user_id":..}] — кому слать сводку
-    data.setdefault("relay_map", {})   # {group_msg_id(str): chat_key} — для чата с гостем
-    data.setdefault("langs", {})       # {chat_id(str): "ru"|"uz"|"en"}
-    data.setdefault("booked", [])      # [{chalet,date(iso),slot,lead_no}] — занятые даты
-    data.setdefault("src", {})         # {chat_id(str): "instagram"} — источник гостя
-    data.setdefault("src_starts", {})  # {"instagram": N} — заходов по источнику
-    data.setdefault("webapp_url", None)  # ссылка на мини-приложение (Netlify и т.п.)
-    data.setdefault("prices", {})      # переопределение цен: {chalet:{"wd":{s:str},"we":{s:str}}}
-    data.setdefault("announce", None)  # объявление/акция (текст) — в ответы ИИ и «Шале и цены»
-    data.setdefault("card", None)      # карта для предоплаты (текст: номер + имя)
-    data.setdefault("pay_hours", 3)    # сколько часов на предоплату
-    data.setdefault("waitlist", [])    # [{chat_key,chalet,date,slot,no,ts}]
-    data.setdefault("guests", {})      # CRM: {chat_id: {name,phone,bookings,confirmed,last_chalet,...}}
-    data.setdefault("dash_token", None)  # (устар.) секрет доступа к веб-панели
-    data.setdefault("dash_user", "zarra")  # логин к веб-панели (Basic Auth)
-    data.setdefault("dash_pass", None)     # пароль к веб-панели (Basic Auth)
-    data.setdefault("dash_host", None)   # публичный IP сервера (определяется сам)
-    return data
+store = load_store()
 
 
 def save_store() -> None:
-    # Пишем во временный файл и атомарно подменяем — чтобы при падении/ребуте
-    # в момент записи база заявок и галерей не повредилась.
-    tmp = STORE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, STORE_PATH)
+    """Сохранить базу на диск. Обёртка над storage.save_store — чтобы весь
+    остальной код мог по-прежнему вызывать save_store() без аргументов."""
+    storage.save_store(store)
 
 
-store = load_store()
 collecting: dict[int, str] = {}        # загрузка галереи: user_id -> категория
 awaiting_location: set[int] = set()    # ждём геоточку от владельца
 
