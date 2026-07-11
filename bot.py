@@ -27,6 +27,7 @@ import re
 import csv
 import json
 import time
+import base64
 import secrets
 import asyncio
 import logging
@@ -472,7 +473,9 @@ def load_store() -> dict:
     data.setdefault("pay_hours", 3)    # сколько часов на предоплату
     data.setdefault("waitlist", [])    # [{chat_key,chalet,date,slot,no,ts}]
     data.setdefault("guests", {})      # CRM: {chat_id: {name,phone,bookings,confirmed,last_chalet,...}}
-    data.setdefault("dash_token", None)  # секрет доступа к веб-панели
+    data.setdefault("dash_token", None)  # (устар.) секрет доступа к веб-панели
+    data.setdefault("dash_user", "zarra")  # логин к веб-панели (Basic Auth)
+    data.setdefault("dash_pass", None)     # пароль к веб-панели (Basic Auth)
     data.setdefault("dash_host", None)   # публичный IP сервера (определяется сам)
     return data
 
@@ -492,6 +495,9 @@ awaiting_location: set[int] = set()    # ждём геоточку от влад
 DASH_PORT = int(os.getenv("DASH_PORT", "8090"))
 if not store.get("dash_token"):
     store["dash_token"] = secrets.token_urlsafe(16)
+    save_store()
+if not store.get("dash_pass"):
+    store["dash_pass"] = secrets.token_urlsafe(9)
     save_store()
 
 
@@ -2353,12 +2359,32 @@ async def cmd_dashboard_web(message: Message):
     if message.chat.type != "private" or not _is_owner(message):
         return
     host = store.get("dash_host") or "ВАШ-IP-СЕРВЕРА"
-    url = f"http://{host}:{DASH_PORT}/?token={store.get('dash_token')}"
+    url = f"http://{host}:{DASH_PORT}/"
     await message.answer(
-        "🖥 Живая веб-панель владельца (обновляется сама):\n\n" + url +
-        "\n\nОткрой в браузере на компьютере. Ссылку не показывай посторонним "
-        f"(в ней токен доступа).\nЕсли не открывается — нужно открыть порт {DASH_PORT} "
-        "на сервере (скажи мне — помогу).")
+        "🖥 Живая веб-панель владельца (обновляется сама):\n\n"
+        f"🔗 Адрес: {url}\n"
+        f"👤 Логин: {store.get('dash_user')}\n"
+        f"🔑 Пароль: {store.get('dash_pass')}\n\n"
+        "Открой адрес в браузере на компьютере — он спросит логин и пароль "
+        "(введи их один раз, браузер запомнит).\n"
+        "🔒 Пароль никому не показывай. Сменить: /set_dash_pass новый_пароль\n"
+        f"Если не открывается — нужно открыть порт {DASH_PORT} на сервере "
+        "(скажи мне — помогу).")
+
+
+@dp.message(Command("set_dash_pass"))
+async def cmd_set_dash_pass(message: Message, command: CommandObject):
+    if message.chat.type != "private" or not _is_owner(message):
+        return
+    new = (command.args or "").strip()
+    if len(new) < 4:
+        await message.answer("Укажи новый пароль (минимум 4 символа):\n"
+                             "/set_dash_pass мой_пароль")
+        return
+    store["dash_pass"] = new
+    save_store()
+    await message.answer("🔑 Пароль веб-панели обновлён. Открой её заново: /dashboard_web\n"
+                         "(в браузере может понадобиться заново ввести логин и пароль).")
 
 
 @dp.message(Command("backup"))
@@ -4292,7 +4318,6 @@ th{color:var(--mut);font-weight:500}
 <div class="panel" style="margin-top:14px"><h3>Последние заявки</h3><table id="rec"></table></div>
 </div>
 <script>
-const T=new URLSearchParams(location.search).get('token')||'';
 let ch1,ch2;
 function money(n){return n>=1e6?(n/1e6).toFixed(1).replace('.',',')+' млн':(n||0).toLocaleString('ru-RU')}
 function kpi(k){const K=k.k30;return [
@@ -4301,7 +4326,7 @@ function kpi(k){const K=k.k30;return [
  ['Рейтинг',K.rating?K.rating+' / 5':'—',1],['Гостей в базе',k.guests,0],
  ['Прогноз заявок·14д',k.fc_leads,1],['Прогноз выручки·14д',money(k.fc_revenue)+' сум',1]]}
 async function load(){
- try{const r=await fetch('/api/data?token='+encodeURIComponent(T));if(!r.ok){document.getElementById('upd').textContent='Нет доступа';return}
+ try{const r=await fetch('/api/data');if(!r.ok){document.getElementById('upd').textContent='Нет доступа';return}
  const d=await r.json();document.getElementById('upd').textContent='обновлено '+d.updated+' · автообновление 30с';
  document.getElementById('kpi').innerHTML=kpi(d).map(x=>`<div class="card"><div class="l">${x[0]}</div><div class="v ${x[2]?'g':''}">${x[1]}</div></div>`).join('');
  const labels=d.hist.map(h=>h.label).concat(d.forecast.map(f=>f.label));
@@ -4321,15 +4346,37 @@ load();setInterval(load,30000);
 </script></body></html>"""
 
 
+def _dash_auth_ok(request) -> bool:
+    """Проверка логина/пароля из заголовка Authorization (HTTP Basic Auth)."""
+    hdr = request.headers.get("Authorization", "")
+    if not hdr.startswith("Basic "):
+        return False
+    try:
+        user, _, pw = base64.b64decode(hdr[6:]).decode("utf-8").partition(":")
+    except Exception:
+        return False
+    ok_user = secrets.compare_digest(user, store.get("dash_user") or "")
+    ok_pw = secrets.compare_digest(pw, store.get("dash_pass") or "")
+    return ok_user and ok_pw
+
+
+def _dash_unauth(as_json: bool = False):
+    """Ответ 401 — браузер покажет окно ввода логина/пароля."""
+    headers = {"WWW-Authenticate": 'Basic realm="Zarra Dashboard", charset="UTF-8"'}
+    if as_json:
+        return web.json_response({"error": "unauthorized"}, status=401, headers=headers)
+    return web.Response(text="Требуется вход", status=401, headers=headers)
+
+
 async def _dash_page(request):
-    if request.query.get("token") != store.get("dash_token"):
-        return web.Response(text="Доступ запрещён", status=403)
+    if not _dash_auth_ok(request):
+        return _dash_unauth()
     return web.Response(text=DASH_HTML, content_type="text/html")
 
 
 async def _dash_api(request):
-    if request.query.get("token") != store.get("dash_token"):
-        return web.json_response({"error": "forbidden"}, status=403)
+    if not _dash_auth_ok(request):
+        return _dash_unauth(as_json=True)
     return web.json_response(dashboard_data())
 
 
