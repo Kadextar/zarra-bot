@@ -704,6 +704,13 @@ T = {
         "ru": "В прошлый раз вы выбирали {chalet} — забронировать снова? 🙂",
         "uz": "O‘tgan safar {chalet} ni tanlagandingiz — yana bron qilaymi? 🙂",
         "en": "Last time you chose {chalet} — book it again? 🙂"},
+    "bday_greet": {
+        "ru": "🎂 С днём рождения, {name}! Команда Zarra Resort & SPA от души поздравляет 🌿 "
+              "Дарим приятную скидку на бронь в этом месяце — просто напишите нам!",
+        "uz": "🎂 Tug‘ilgan kuningiz bilan, {name}! Zarra Resort & SPA jamoasi tabriklaydi 🌿 "
+              "Shu oyda bron uchun chegirma sovg‘a — bizga yozing!",
+        "en": "🎂 Happy birthday, {name}! The Zarra Resort & SPA team wishes you all the best 🌿 "
+              "Here's a nice discount on a booking this month — just message us!"},
     "choose_lang": {
         "ru": "Выберите язык 👇", "uz": "Tilni tanlang 👇", "en": "Choose a language 👇"},
     "lang_set": {
@@ -1276,6 +1283,54 @@ def touch_user(message: Message) -> None:
     g["lang"] = get_lang(u.id)
     g["msgs"] = g.get("msgs", 0) + 1
     save_store()
+
+
+def guest_tags(g: dict) -> list:
+    """Авто-сегменты гостя (по ценности и активности)."""
+    tags = []
+    conf, books = g.get("confirmed", 0), g.get("bookings", 0)
+    if conf >= 3:
+        tags.append("⭐ VIP")
+    elif conf >= 1:
+        tags.append("🔁 Постоянный")
+    elif books >= 1:
+        tags.append("🌱 Интересуется")
+    else:
+        tags.append("🆕 Новый")
+    try:
+        days = (tashkent_now() - datetime.strptime(g.get("last_ts", ""), "%Y-%m-%d %H:%M")).days
+        if days > 45:
+            tags.append("😴 Спящий")
+    except Exception:
+        pass
+    return tags
+
+
+def guest_leads(gid) -> list:
+    return [l for l in store.get("leads", [])
+            if str(l.get("chat_key", "")).split(":")[-1] == str(gid)]
+
+
+def guest_ltv(gid) -> int:
+    return sum(v for v in (lead_revenue(l) for l in guest_leads(gid)
+                           if l.get("status") == "confirmed") if v)
+
+
+def in_segment(g: dict, seg: str) -> bool:
+    conf, books = g.get("confirmed", 0), g.get("bookings", 0)
+    try:
+        days = (tashkent_now() - datetime.strptime(g.get("last_ts", ""), "%Y-%m-%d %H:%M")).days
+    except Exception:
+        days = 0
+    if seg in ("постоянным", "постоянные", "vip"):
+        return conf >= 1
+    if seg in ("новым", "новые"):
+        return books == 0
+    if seg in ("спящим", "спящие"):
+        return days > 45
+    if seg in ("интересовались", "лиды"):
+        return books >= 1 and conf == 0
+    return True
 
 
 async def relay_to_group(chat_key: str, message: Message, text: str) -> None:
@@ -1896,24 +1951,49 @@ def guest_chat_ids() -> set:
     return {i for i in ids if isinstance(i, int) and i > 0}   # только личные чаты
 
 
+_SEG_WORDS = {"всем", "постоянным", "новым", "спящим", "интересовались"}
+
+
+def segment_ids(seg: str) -> set:
+    if not seg or seg in ("всем", "все"):
+        return guest_chat_ids()
+    ids = set()
+    for gid, g in store.get("guests", {}).items():
+        try:
+            uid = int(gid)
+        except Exception:
+            continue
+        if uid > 0 and in_segment(g, seg):
+            ids.add(uid)
+    return ids
+
+
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(message: Message):
     if message.chat.type != "private" or not _is_owner(message):
         return
-    text = (message.text or "").partition(" ")[2].strip()
+    raw = (message.text or "").partition(" ")[2].strip()
+    seg, text = "всем", raw
+    first = raw.split(maxsplit=1)
+    if first and first[0].lower() in _SEG_WORDS:
+        seg = first[0].lower()
+        text = first[1] if len(first) > 1 else ""
     if not text:
-        await message.answer("Формат: /broadcast <текст сообщения>\n"
-                             "Отправится всем гостям, кто писал боту.")
+        await message.answer(
+            "Формат: /broadcast <текст>\n"
+            "По сегменту: /broadcast постоянным <текст>\n"
+            "Сегменты: всем · постоянным · новым · спящим · интересовались")
         return
-    n = len(guest_chat_ids())
-    if not n:
-        await message.answer("Пока некому рассылать — нет гостей в базе.")
+    ids = segment_ids(seg)
+    if not ids:
+        await message.answer(f"В сегменте «{seg}» пока никого нет.")
         return
-    pending_broadcast[message.from_user.id] = text
+    pending_broadcast[message.from_user.id] = (seg, text)
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"📤 Отправить {n} гостям", callback_data="bcast:go"),
+        InlineKeyboardButton(text=f"📤 Отправить ({seg}: {len(ids)})", callback_data="bcast:go"),
         InlineKeyboardButton(text="❌ Отмена", callback_data="bcast:no")]])
-    await message.answer("Предпросмотр рассылки:\n\n" + text, reply_markup=kb)
+    await message.answer(f"Предпросмотр рассылки · сегмент «{seg}» · {len(ids)} чел.:\n\n" + text,
+                         reply_markup=kb)
 
 
 @dp.callback_query(F.data == "bcast:no")
@@ -1928,17 +2008,18 @@ async def on_bcast_no(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "bcast:go")
 async def on_bcast_go(cb: CallbackQuery):
-    text = pending_broadcast.pop(cb.from_user.id, None)
-    if not text:
+    data = pending_broadcast.pop(cb.from_user.id, None)
+    if not data:
         await cb.answer("Нечего отправлять")
         return
+    seg, text = data
     await cb.answer("Отправляю…")
     try:
         await cb.message.edit_text("📤 Рассылка запущена…")
     except Exception:
         pass
     sent = failed = 0
-    for cid in guest_chat_ids():
+    for cid in segment_ids(seg):
         try:
             await bot.send_message(cid, text)
             sent += 1
@@ -2444,18 +2525,118 @@ async def cmd_user(message: Message):
         await message.answer("Не нашёл. Формат: /user 123456789 (или /user @username)")
         return
     un = f"@{g['username']}" if g.get("username") else "—"
-    await message.answer(
-        f"👤 Пользователь {arg}\n\n"
-        f"Имя (Telegram): {g.get('tg_name', '—')}\n"
-        f"Имя в брони: {g.get('name', '—')}\n"
-        f"Username: {un}\n"
-        f"Язык: {g.get('lang', '—')}\n"
-        f"Телефон: {g.get('phone', '—')}\n"
-        f"Сообщений: {g.get('msgs', 0)}\n"
-        f"Заявок: {g.get('bookings', 0)} · подтверждено: {g.get('confirmed', 0)}\n"
-        f"Последнее шале: {g.get('last_chalet', '—')}\n"
-        f"Первый визит: {g.get('first_ts', '—')}\n"
-        f"Последняя активность: {g.get('last_ts', '—')}")
+    ltv = guest_ltv(arg)
+    hist = guest_leads(arg)[-5:]
+    lines = [
+        f"👤 {g.get('tg_name', '—')}  ({arg})",
+        "  ".join(guest_tags(g)), "",
+        f"Username: {un}   Язык: {g.get('lang', '—')}",
+        f"Имя в брони: {g.get('name', '—')}",
+        f"Телефон: {g.get('phone', '—')}",
+        f"🎂 День рождения: {g.get('bday', '—')}",
+        f"💰 Всего оставил (LTV): {_fmt_money(ltv)} сум" if ltv else "💰 Всего оставил: —",
+        f"Сообщений: {g.get('msgs', 0)}  ·  заявок: {g.get('bookings', 0)}  ·  "
+        f"подтв.: {g.get('confirmed', 0)}",
+        f"Первый визит: {g.get('first_ts', '—')}  ·  был: {g.get('last_ts', '—')}",
+    ]
+    if g.get("note"):
+        lines.append(f"📝 Заметка: {g['note']}")
+    if hist:
+        lines.append("\nИстория заявок:")
+        st = {"confirmed": "✅", "rejected": "❌", "in_progress": "🙋", "new": "🆕"}
+        for l in reversed(hist):
+            d = l.get("data", {})
+            lines.append(f"• #{l.get('no')} {st.get(l.get('status'), '')} "
+                         f"{d.get('chalet', '')} {d.get('date', '')} ({l.get('ts', '')})")
+    lines.append("\nЗаметка: /note " + arg + " текст  ·  ДР: /bday " + arg + " ДД.ММ")
+    await message.answer("\n".join(lines))
+
+
+def _find_guest(arg: str):
+    """Ищет гостя по id или @username. Возвращает (gid, g) или (None, None)."""
+    arg = arg.lstrip("@")
+    g = store.get("guests", {}).get(arg)
+    if g:
+        return arg, g
+    for gid, gg in store.get("guests", {}).items():
+        if (gg.get("username") or "").lower() == arg.lower():
+            return gid, gg
+    return None, None
+
+
+@dp.message(Command("note"))
+async def cmd_note(message: Message):
+    if not _is_staff(message):
+        return
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 2:
+        await message.answer("Формат: /note <id или @username> текст заметки\n"
+                             "Убрать: /note <id> -")
+        return
+    gid, g = _find_guest(parts[1])
+    if not g:
+        await message.answer("Гость не найден.")
+        return
+    note = parts[2].strip() if len(parts) > 2 else ""
+    if note in ("", "-"):
+        g.pop("note", None)
+        await message.answer("Заметка убрана.")
+    else:
+        g["note"] = note
+        await message.answer(f"📝 Заметка сохранена для {g.get('tg_name', gid)}.")
+    save_store()
+
+
+@dp.message(Command("bday"))
+async def cmd_bday(message: Message):
+    if not _is_staff(message):
+        return
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("Формат: /bday <id или @username> ДД.ММ (например 05.07)")
+        return
+    gid, g = _find_guest(parts[1])
+    if not g:
+        await message.answer("Гость не найден.")
+        return
+    m = re.match(r"^(\d{1,2})[.\-/](\d{1,2})", parts[2].strip())
+    if not m:
+        await message.answer("Дата в формате ДД.ММ, например 05.07")
+        return
+    dd, mm = int(m.group(1)), int(m.group(2))
+    if not (1 <= dd <= 31 and 1 <= mm <= 12):
+        await message.answer("Неверная дата.")
+        return
+    g["bday"] = f"{dd:02d}.{mm:02d}"
+    save_store()
+    await message.answer(f"🎂 День рождения {g['bday']} сохранён для {g.get('tg_name', gid)}. "
+                         "Бот сам поздравит в этот день.")
+
+
+@dp.message(Command("find"))
+async def cmd_find(message: Message):
+    if not _is_staff(message):
+        return
+    q = (message.text or "").partition(" ")[2].strip().lower()
+    if not q:
+        await message.answer("Формат: /find <имя, телефон, @username или id>")
+        return
+    res = []
+    for gid, g in store.get("guests", {}).items():
+        hay = " ".join([gid, g.get("tg_name", ""), g.get("name", ""),
+                        g.get("username", ""), g.get("phone", "")]).lower()
+        if q in hay:
+            res.append((gid, g))
+    if not res:
+        await message.answer("Ничего не нашёл.")
+        return
+    lines = [f"🔎 Найдено: {len(res)}\n"]
+    for gid, g in res[:15]:
+        un = f"@{g['username']} " if g.get("username") else ""
+        lines.append(f"• {g.get('tg_name') or g.get('name') or '—'} {un}({gid}) — "
+                     f"{'/'.join(guest_tags(g))}")
+    lines.append("\nПодробнее: /user <id>")
+    await message.answer("\n".join(lines))
 
 
 # =============================================================================
@@ -3834,6 +4015,31 @@ async def send_backup_to_owner() -> None:
         log.warning(f"owner backup error: {e}")
 
 
+async def run_birthdays() -> None:
+    """Поздравляет гостей с днём рождения (раз в год)."""
+    now = tashkent_now()
+    today = now.strftime("%d.%m")
+    year = now.year
+    changed = False
+    for gid, g in list(store.get("guests", {}).items()):
+        if g.get("bday") != today or g.get("bday_year") == year:
+            continue
+        try:
+            uid = int(gid)
+        except Exception:
+            continue
+        name = g.get("tg_name") or g.get("name") or ""
+        try:
+            await bot.send_message(uid, L(g.get("lang", "ru"), "bday_greet", name=name))
+            g["bday_year"] = year
+            changed = True
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            log.warning(f"bday greet: {e}")
+    if changed:
+        save_store()
+
+
 async def send_to_guest(chat_key: str, text: str, reply_markup=None) -> bool:
     c = store.get("chats", {}).get(chat_key)
     if not c or not c.get("chat_id"):
@@ -4003,6 +4209,7 @@ async def scheduler() -> None:
                 await send_backup_to_owner()
                 await run_reminders()
                 await run_reviews()
+                await run_birthdays()
                 last_morning_day = day
         except Exception as e:
             log.warning(f"scheduler error: {e}")
@@ -4023,6 +4230,7 @@ STAFF_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="revenue", description="AI-подсказки по ценам"),
     BotCommand(command="forecast", description="Прогноз на 14 дней"),
     BotCommand(command="users", description="Пользователи (кто есть кто)"),
+    BotCommand(command="find", description="Найти гостя"),
     BotCommand(command="chart", description="График загрузки"),
     BotCommand(command="busy", description="Занятые даты"),
     BotCommand(command="prices", description="Цены (изменить)"),
