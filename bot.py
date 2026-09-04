@@ -63,7 +63,7 @@ MODEL = "llama-3.3-70b-versatile"
 # Рабочие часы (время Ташкента, UTC+5). Вне этих часов бот предупреждает гостя.
 WORK_START, WORK_END = 9, 23
 
-# Праздничные дни Узбекистана — на эти даты цена +20%, как в выходные.
+# Праздничные дни Узбекистана — на эти даты действует ЦЕНА ВЫХОДНОГО ДНЯ.
 # Формат: "ГГГГ-ММ-ДД". Религиозные праздники (Хайит) сдвигаются каждый год —
 # проверяй и обновляй список раз в год.
 HOLIDAYS = {
@@ -81,7 +81,7 @@ HOLIDAYS = {
 
 
 def is_surcharge_day(dt: datetime) -> bool:
-    """+20% действует в субботу, воскресенье и в праздничные дни."""
+    """Цена выходного дня действует в субботу, воскресенье и в праздники."""
     return dt.weekday() >= 5 or dt.strftime("%Y-%m-%d") in HOLIDAYS
 
 
@@ -89,7 +89,7 @@ def is_surcharge_day(dt: datetime) -> bool:
 #  БАЗА ЗНАНИЙ — это "память" бота. Здесь можно редактировать факты.
 # =============================================================================
 KNOWLEDGE = """
-Zarra Resort & SPA — премиальный загородный резорт.
+Zarra Hotel & Resort — премиальный загородный резорт.
 Девиз: «Где время становится роскошью».
 Telegram: @zarra_resort | Instagram: @zarraresort
 
@@ -99,22 +99,28 @@ Telegram: @zarra_resort | Instagram: @zarraresort
    - Спальных мест: 2 — С НОЧЁВКОЙ остаться могут максимум 2 человека.
    - Посадочных мест: 8 — днём/вечером можно принять до 8 гостей,
      но переночевать смогут только 2.
-   ЦЕНЫ — формат «будни / выходные (Сб, Вс, праздники +20%)»:
-   - Слот 1, с 10:00 до 17:00 (7 часов) — 1,5 млн / 1,8 млн сум
-   - Слот 2, с 18:00 до 09:00 (15 часов) — 2 млн / 2,4 млн сум
-   - Слот 3, ПОЛНЫЙ ДЕНЬ с 10:00 до 09:00 (23 часа) — 3 млн / 3,6 млн сум
+   ЦЕНЫ — формат «будни / выходные (Сб, Вс, праздники)»:
+   - Слот 1, с 10:00 до 17:00 (7 часов) — 2,5 млн / 2,8 млн сум
+   - Слот 2, с 18:00 до 09:00 (15 часов) — 3 млн / 3,4 млн сум
+   - Слот 3, ПОЛНЫЙ ДЕНЬ с 10:00 до 09:00 (23 часа) — 4 млн / 4,6 млн сум
 
 2) ШАЛЕ ПРЕЗИДЕНТ ЛЮКС — всего 3 виллы (до 3 одновременно на одну дату).
    - Спальных мест: 7 — С НОЧЁВКОЙ остаться могут до 7 человек.
    - Посадочных мест: 15 — до 15 гостей на мероприятии; ночуют до 7.
-   ЦЕНЫ — формат «будни / выходные (Сб, Вс, праздники +20%)»:
-   - Слот 1, с 10:00 до 17:00 (7 часов) — 3 млн / 3,6 млн сум
-   - Слот 2, с 18:00 до 09:00 (15 часов) — 4 млн / 4,8 млн сум
-   - Слот 3, ПОЛНЫЙ ДЕНЬ с 10:00 до 09:00 (23 часа) — 6 млн / 7,2 млн сум
+   ЦЕНЫ — формат «будни / выходные (Сб, Вс, праздники)»:
+   - Слот 1, с 10:00 до 17:00 (7 часов) — 4 млн / 4,6 млн сум
+   - Слот 2, с 18:00 до 09:00 (15 часов) — 5 млн / 5,8 млн сум
+   - Слот 3, ПОЛНЫЙ ДЕНЬ с 10:00 до 09:00 (23 часа) — 7 млн / 8,2 млн сум
 
 ВАЖНО ПРО ЦЕНЫ:
-- По субботам, воскресеньям и в праздничные дни цены ВЫШЕ на 20% (см. суммы выше).
+- По субботам, воскресеньям и в праздничные дни действует цена выходного дня —
+  это ОТДЕЛЬНЫЕ суммы, указанные выше вторым числом. НЕ считай их как «будни плюс
+  какой-то процент» — бери готовое число.
 - Все цены — в узбекских сумах (сум).
+
+ЧТО ВХОДИТ В СТОИМОСТЬ ШАЛЕ:
+- Доступ к бассейну с подогревом.
+- Блюда из меню ресторана на сумму до 1 000 000 сум.
 
 МЕРОПРИЯТИЯ:
 - На территории можно проводить дни рождения и мероприятия.
@@ -193,7 +199,7 @@ Telegram: @zarra_resort | Instagram: @zarraresort
 #  ПРАВИЛА ПОВЕДЕНИЯ
 # =============================================================================
 RULES = """
-Ты — живой, тёплый и гостеприимный ассистент резорта Zarra Resort & SPA.
+Ты — живой, тёплый и гостеприимный ассистент резорта Zarra Hotel & Resort.
 Ты общаешься от имени резорта в Telegram.
 
 КАК ОБЩАТЬСЯ:
@@ -213,8 +219,10 @@ RULES = """
   и дай контакты для связи.
 - В начале тебе сообщают текущие день недели, дату и время — опирайся на них,
   не путай утро/день/вечер и не выдумывай, какой сейчас день.
-- Наценка +20% применяется ТОЛЬКО когда ДАТА брони — суббота, воскресенье или
-  официальный праздничный день. Будний день (пн–пт) — без наценки.
+- Цена выходного дня применяется ТОЛЬКО когда ДАТА брони — суббота, воскресенье
+  или официальный праздничный день. Будний день (пн–пт) — цена буднего дня.
+- НИКОГДА не вычисляй цену выходного сам (не прибавляй проценты). Для выходных
+  есть ГОТОВЫЕ суммы — называй именно их.
 - ВАЖНО: «повод» гостя (праздник, день рождения, свадьба и т.п.) — это просто
   причина брони, на цену он НЕ влияет. Не путай «повод — праздник» с тем,
   что дата выпадает на праздничный день.
@@ -228,8 +236,8 @@ RULES = """
   подбери: какое шале подходит по числу гостей (до 8 — Комфорт; 9–15 — Люкс;
   больше 15 — предложи несколько вилл и связь с сотрудником), какой слот уместен
   (день рождения днём — слот 1 или 3; ночёвка — слот 2/3), и назови ПРИМЕРНУЮ
-  стоимость для нужной даты (учитывай +20% в выходные/праздники; бери цены из
-  блока актуальных цен).
+  стоимость для нужной даты (в выходные/праздники бери готовую цену выходного
+  дня; все суммы — из блока актуальных цен).
 - Предложи 3–5 подходящих позиций из меню под повод (шашлыки, пивной сет и т.п.).
 - В конце мягко предложи оформить бронь (собрать данные) — но не выдумывай итог
   и не занимайся оплатой. Пиши «примерно/ориентировочно», финал подтверждает сотрудник.
@@ -262,7 +270,7 @@ SYSTEM_PROMPT = RULES + "\n\nБАЗА ЗНАНИЙ:\n" + KNOWLEDGE
 # Персона для ГРУППОВОГО чата — тёплый дружелюбный помощник, который
 # поддерживает беседу. Отвечает, только когда к нему обратились.
 GROUP_RULES = """
-Ты — Zarra, дружелюбный и отзывчивый помощник резорта Zarra Resort & SPA.
+Ты — Zarra, дружелюбный и отзывчивый помощник резорта Zarra Hotel & Resort.
 Ты участник этого группового чата и общаешься с людьми по-приятельски.
 Представляйся именно как помощник (ассистент), а не как «хозяин» или владелец.
 
@@ -295,7 +303,8 @@ PRICES_TEXT = {
         "«Президент Люкс» (3 виллы) — ночёвка до 7 чел., до 15 гостей:\n"
         "• День 10:00–17:00 — {l1}\n• Ночь 18:00–09:00 — {l2}\n"
         "• Полный день — {l3}\n\n"
-        "Выходные (Сб, Вс) и праздники +20%. Цены в сумах.\n"
+        "Цены в сумах. В стоимость входит бассейн с подогревом и блюда\n"
+        "из меню ресторана на сумму до 1 000 000 сум.\n"
         "Можно проводить дни рождения и мероприятия 🎉\n"
         "Предоплата 50%, возврат при отмене за 3+ дня.\n\n"
         "Хотите фото или забронировать? Просто напишите 🙂"),
@@ -307,7 +316,8 @@ PRICES_TEXT = {
         "«Prezident Lyuks» (3 villa) — tunash 7 kishigacha, 15 mehmongacha:\n"
         "• Kunduzi 10:00–17:00 — {l1}\n• Tunda 18:00–09:00 — {l2}\n"
         "• To‘liq kun — {l3}\n\n"
-        "Dam olish kunlari (Sha, Yak) va bayramlarda +20%. Narxlar so‘mda.\n"
+        "Narxlar so‘mda. Narxga isitiladigan basseyn va restoran menyusidan\n"
+        "1 000 000 so‘mgacha taomlar kiradi.\n"
         "Tug‘ilgan kun va tadbirlar o‘tkazish mumkin 🎉\n"
         "50% oldindan to‘lov, 3+ kun oldin bekor qilsangiz qaytariladi.\n\n"
         "Foto yoki bron kerakmi? Shunchaki yozing 🙂"),
@@ -319,7 +329,8 @@ PRICES_TEXT = {
         "“President Lux” (3 villas) — overnight up to 7, up to 15 guests:\n"
         "• Day 10:00–17:00 — {l1}\n• Night 18:00–09:00 — {l2}\n"
         "• Full day — {l3}\n\n"
-        "Weekends (Sat, Sun) and holidays +20%. Prices in UZS (so‘m).\n"
+        "Prices in UZS (so‘m). Includes the heated pool and up to\n"
+        "1,000,000 so‘m of dishes from the restaurant menu.\n"
         "Birthdays and events are welcome 🎉\n"
         "50% prepayment, refundable if cancelled 3+ days ahead.\n\n"
         "Want photos or to book? Just write 🙂"),
@@ -330,7 +341,8 @@ SLOTS_TEXT = {
         "• Слот 1 — день, 10:00–17:00\n"
         "• Слот 2 — ночь, 18:00–09:00\n"
         "• Слот 3 — полный день, 10:00–09:00\n\n"
-        "Цены зависят от шале (см. «🏡 Шале и цены»). Сб/Вс/праздники +20%.\n"
+        "Цены зависят от шале (см. «🏡 Шале и цены»). В Сб/Вс и праздники\n"
+        "действует цена выходного дня.\n"
         "Для брони нужна предоплата 50%. Возврат — при отмене за 3+ дня.\n\n"
         "Чтобы забронировать — нажмите «📝 Забронировать» 🙌"),
     "uz": (
@@ -338,7 +350,8 @@ SLOTS_TEXT = {
         "• Slot 1 — kunduzi, 10:00–17:00\n"
         "• Slot 2 — tunda, 18:00–09:00\n"
         "• Slot 3 — to‘liq kun, 10:00–09:00\n\n"
-        "Narx shalega bog‘liq («🏡 Shale va narxlar»). Shanba/yakshanba/bayram +20%.\n"
+        "Narx shalega bog‘liq («🏡 Shale va narxlar»). Shanba/yakshanba va\n"
+        "bayramlarda dam olish kuni narxi amal qiladi.\n"
         "Bron uchun 50% oldindan to‘lov. 3+ kun oldin bekor — qaytariladi.\n\n"
         "Bron qilish uchun «📝 Bron qilish» tugmasini bosing 🙌"),
     "en": (
@@ -346,7 +359,8 @@ SLOTS_TEXT = {
         "• Slot 1 — day, 10:00–17:00\n"
         "• Slot 2 — night, 18:00–09:00\n"
         "• Slot 3 — full day, 10:00–09:00\n\n"
-        "Prices depend on the chalet (see “🏡 Chalets & prices”). Sat/Sun/holidays +20%.\n"
+        "Prices depend on the chalet (see “🏡 Chalets & prices”). Weekend rates\n"
+        "apply on Sat/Sun and holidays.\n"
         "Booking needs a 50% prepayment. Refundable if cancelled 3+ days ahead.\n\n"
         "To book — tap “📝 Book now” 🙌"),
 }
@@ -657,30 +671,30 @@ PLACEHOLDER = {"ru": "Выберите или напишите вопрос…",
 # Прочие строки интерфейса (прямой бот + мастер брони).
 T = {
     "greeting": {
-        "ru": ("Assalomu alaykum! Welcome to Zarra Resort & SPA 🌿\n\n"
+        "ru": ("Assalomu alaykum! Welcome to Zarra Hotel & Resort 🌿\n\n"
                "Здравствуйте! Я ассистент резорта. Выберите кнопку ниже или просто "
                "напишите вопрос — отвечу на вашем языке."),
-        "uz": ("Assalomu alaykum! Zarra Resort & SPA ga xush kelibsiz 🌿\n\n"
+        "uz": ("Assalomu alaykum! Zarra Hotel & Resort ga xush kelibsiz 🌿\n\n"
                "Men rezortning yordamchisiman. Quyidagi tugmani tanlang yoki "
                "savolingizni yozing — tilingizda javob beraman."),
-        "en": ("Assalomu alaykum! Welcome to Zarra Resort & SPA 🌿\n\n"
+        "en": ("Assalomu alaykum! Welcome to Zarra Hotel & Resort 🌿\n\n"
                "I'm the resort assistant. Tap a button below or just type your "
                "question — I'll reply in your language."),
     },
     "welcome_back": {
-        "ru": "С возвращением, {name}! 🌿 Рады снова видеть вас в Zarra Resort & SPA.",
-        "uz": "Qaytganingizdan xursandmiz, {name}! 🌿 Zarra Resort & SPA sizni yana kutib oldi.",
-        "en": "Welcome back, {name}! 🌿 Great to see you again at Zarra Resort & SPA."},
+        "ru": "С возвращением, {name}! 🌿 Рады снова видеть вас в Zarra Hotel & Resort.",
+        "uz": "Qaytganingizdan xursandmiz, {name}! 🌿 Zarra Hotel & Resort sizni yana kutib oldi.",
+        "en": "Welcome back, {name}! 🌿 Great to see you again at Zarra Hotel & Resort."},
     "welcome_back_last": {
         "ru": "В прошлый раз вы выбирали {chalet} — забронировать снова? 🙂",
         "uz": "O‘tgan safar {chalet} ni tanlagandingiz — yana bron qilaymi? 🙂",
         "en": "Last time you chose {chalet} — book it again? 🙂"},
     "bday_greet": {
-        "ru": "🎂 С днём рождения, {name}! Команда Zarra Resort & SPA от души поздравляет 🌿 "
+        "ru": "🎂 С днём рождения, {name}! Команда Zarra Hotel & Resort от души поздравляет 🌿 "
               "Дарим приятную скидку на бронь в этом месяце — просто напишите нам!",
-        "uz": "🎂 Tug‘ilgan kuningiz bilan, {name}! Zarra Resort & SPA jamoasi tabriklaydi 🌿 "
+        "uz": "🎂 Tug‘ilgan kuningiz bilan, {name}! Zarra Hotel & Resort jamoasi tabriklaydi 🌿 "
               "Shu oyda bron uchun chegirma sovg‘a — bizga yozing!",
-        "en": "🎂 Happy birthday, {name}! The Zarra Resort & SPA team wishes you all the best 🌿 "
+        "en": "🎂 Happy birthday, {name}! The Zarra Hotel & Resort team wishes you all the best 🌿 "
               "Here's a nice discount on a booking this month — just message us!"},
     "choose_lang": {
         "ru": "Выберите язык 👇", "uz": "Tilni tanlang 👇", "en": "Choose a language 👇"},
@@ -707,24 +721,24 @@ T = {
         "uz": "Kechirasiz, ovozli xabarni tushunmadim 🙈 Iltimos, matn bilan yozing.",
         "en": "Sorry, I couldn't understand the voice message 🙈 Please type it."},
     "followup": {
-        "ru": ("Здравствуйте! 🙂 Вы недавно интересовались отдыхом в Zarra Resort & SPA. "
+        "ru": ("Здравствуйте! 🙂 Вы недавно интересовались отдыхом в Zarra Hotel & Resort. "
                "Подсказать что-то ещё или придержать удобную дату? Будем рады помочь."),
-        "uz": ("Assalomu alaykum! 🙂 Yaqinda Zarra Resort & SPA bilan qiziqgandingiz. "
+        "uz": ("Assalomu alaykum! 🙂 Yaqinda Zarra Hotel & Resort bilan qiziqgandingiz. "
                "Yana nimadir kerakmi yoki qulay sanani ushlab turaymi? Yordam beramiz."),
-        "en": ("Hello! 🙂 You recently asked about a stay at Zarra Resort & SPA. "
+        "en": ("Hello! 🙂 You recently asked about a stay at Zarra Hotel & Resort. "
                "Anything else I can help with, or shall we hold a date for you?")},
     "loc_no": {
         "ru": "📍 Точный адрес уточните, пожалуйста, у нас:\n",
         "uz": "📍 Aniq manzilni biz bilan aniqlang:\n",
         "en": "📍 Please check the exact address with us:\n"},
     "loc_card": {
-        "ru": "📍 Zarra Resort & SPA\n{addr}Точка на карте — выше 👆\n"
+        "ru": "📍 Zarra Hotel & Resort\n{addr}Точка на карте — выше 👆\n"
               "Совет: для точного маршрута открывайте 2ГИС (кнопка ниже) — Google иногда ведёт не туда.\n"
               "Нужна помощь с дорогой? +998 87 591 33 30",
-        "uz": "📍 Zarra Resort & SPA\n{addr}Xarita nuqtasi — yuqorida 👆\n"
+        "uz": "📍 Zarra Hotel & Resort\n{addr}Xarita nuqtasi — yuqorida 👆\n"
               "Maslahat: aniq marshrut uchun 2GIS'ni oching (quyidagi tugma) — Google ba'zan noto‘g‘ri olib boradi.\n"
               "Yo‘l kerakmi? +998 87 591 33 30",
-        "en": "📍 Zarra Resort & SPA\n{addr}Map pin is above 👆\n"
+        "en": "📍 Zarra Hotel & Resort\n{addr}Map pin is above 👆\n"
               "Tip: use 2GIS for accurate directions (button below) — Google sometimes misleads.\n"
               "Need directions? +998 87 591 33 30"},
     # --- Мастер брони ---
@@ -775,13 +789,13 @@ T = {
     "bk_done": {
         "ru": ("Готово! Заявку передал нашему сотруднику ✅\n"
                "Он скоро свяжется с вами для подтверждения. Спасибо, что выбрали "
-               "Zarra Resort & SPA 🌿"),
+               "Zarra Hotel & Resort 🌿"),
         "uz": ("Tayyor! Arizangiz xodimimizga yuborildi ✅\n"
-               "Tez orada tasdiqlash uchun bog‘lanadi. Zarra Resort & SPA ni "
+               "Tez orada tasdiqlash uchun bog‘lanadi. Zarra Hotel & Resort ni "
                "tanlaganingiz uchun rahmat 🌿"),
         "en": ("Done! Your request was sent to our staff ✅\n"
                "They'll contact you shortly to confirm. Thank you for choosing "
-               "Zarra Resort & SPA 🌿")},
+               "Zarra Hotel & Resort 🌿")},
     "bk_done_nogroup": {
         "ru": "Спасибо! Данные принял 🙌 Для подтверждения свяжитесь с нами:\n",
         "uz": "Rahmat! Ma'lumotlar qabul qilindi 🙌 Tasdiqlash uchun biz bilan bog‘laning:\n",
@@ -823,16 +837,16 @@ T = {
     "bk_more_dates": {"ru": "➡️ Ещё даты", "uz": "➡️ Yana sanalar", "en": "➡️ More dates"},
     # --- Напоминание и отзыв ---
     "reminder": {
-        "ru": ("Напоминаем: завтра ваш заезд в Zarra Resort & SPA 🌿\n"
+        "ru": ("Напоминаем: завтра ваш заезд в Zarra Hotel & Resort 🌿\n"
                "{chalet}, {slot}.\nЖдём вас! Вопросы по дороге: +998 87 591 33 30"),
-        "uz": ("Eslatma: ertaga Zarra Resort & SPA ga tashrifingiz 🌿\n"
+        "uz": ("Eslatma: ertaga Zarra Hotel & Resort ga tashrifingiz 🌿\n"
                "{chalet}, {slot}.\nKutamiz! Yo‘l savollari: +998 87 591 33 30"),
-        "en": ("Reminder: your check-in at Zarra Resort & SPA is tomorrow 🌿\n"
+        "en": ("Reminder: your check-in at Zarra Hotel & Resort is tomorrow 🌿\n"
                "{chalet}, {slot}.\nSee you! Directions: +998 87 591 33 30")},
     "review_ask": {
-        "ru": "Спасибо, что были у нас в Zarra Resort & SPA! 🌿\nКак всё прошло? Оцените, пожалуйста:",
-        "uz": "Zarra Resort & SPA da bo‘lganingiz uchun rahmat! 🌿\nQanday o‘tdi? Iltimos, baholang:",
-        "en": "Thank you for staying at Zarra Resort & SPA! 🌿\nHow was it? Please rate:"},
+        "ru": "Спасибо, что были у нас в Zarra Hotel & Resort! 🌿\nКак всё прошло? Оцените, пожалуйста:",
+        "uz": "Zarra Hotel & Resort da bo‘lganingiz uchun rahmat! 🌿\nQanday o‘tdi? Iltimos, baholang:",
+        "en": "Thank you for staying at Zarra Hotel & Resort! 🌿\nHow was it? Please rate:"},
     "review_thanks_hi": {
         "ru": "Спасибо за высокую оценку! ⭐️ Будем рады, если оставите отзыв в Instagram @zarraresort 🙏",
         "uz": "Yuqori baho uchun rahmat! ⭐️ Instagram @zarraresort da fikr qoldirsangiz xursand bo‘lamiz 🙏",
@@ -1414,7 +1428,7 @@ async def ask_ai(chat_key: str, user_text: str, lang: str = "ru"):
            "пятница", "суббота", "воскресенье"]
     weekday = _WD[now_dt.weekday()]
     date_str = now_dt.strftime("%d.%m.%Y")
-    weekend = ("Сегодня выходной/праздник — цены +20%."
+    weekend = ("Сегодня выходной/праздник — действует цена выходного дня."
                if is_surcharge_day(now_dt) else "Сегодня будний день.")
     when = f"Сейчас в резорте: {weekday}, {date_str}, {now}. {weekend}"
     if is_working_hours():
@@ -1425,13 +1439,14 @@ async def ask_ai(chat_key: str, user_text: str, lang: str = "ru"):
                      "что подтверждение/ответ сотрудника может быть утром.")
 
     holidays_note = (
-        "ПРАЗДНИЧНЫЕ ДНИ (если ДАТА брони попадает на одну из них — цена +20%, "
-        "как в выходные): " + ", ".join(sorted(HOLIDAYS)) + ". "
-        "В остальные будни (пн–пт) наценки нет."
+        "ПРАЗДНИЧНЫЕ ДНИ (если ДАТА брони попадает на одну из них — действует "
+        "цена выходного дня): " + ", ".join(sorted(HOLIDAYS)) + ". "
+        "В остальные будни (пн–пт) — цена буднего дня."
     )
     # Актуальные цены (с учётом /setprice) — приоритет над базой знаний.
     prices_note = (
-        "АКТУАЛЬНЫЕ ЦЕНЫ (будни / выходные +20%; приоритет над базой знаний):\n"
+        "АКТУАЛЬНЫЕ ЦЕНЫ (будни / выходные — готовые суммы, проценты НЕ считать; "
+        "приоритет над базой знаний):\n"
         f"Комфорт: день {get_price('comfort','1',False)}/{get_price('comfort','1',True)}, "
         f"ночь {get_price('comfort','2',False)}/{get_price('comfort','2',True)}, "
         f"полный день {get_price('comfort','3',False)}/{get_price('comfort','3',True)}. "
@@ -2640,9 +2655,9 @@ CARD = {
     "slot": {"ru": "Тариф", "uz": "Tarif", "en": "Rate"},
     "guests": {"ru": "Гостей", "uz": "Mehmonlar", "en": "Guests"},
     "name": {"ru": "Гость", "uz": "Mehmon", "en": "Guest"},
-    "footer": {"ru": "Ждём вас в Zarra Resort & SPA",
-               "uz": "Zarra Resort & SPA da kutamiz",
-               "en": "See you at Zarra Resort & SPA"},
+    "footer": {"ru": "Ждём вас в Zarra Hotel & Resort",
+               "uz": "Zarra Hotel & Resort da kutamiz",
+               "en": "See you at Zarra Hotel & Resort"},
     "caption": {"ru": "🎉 Ваша бронь подтверждена! Ждём вас 🌿",
                 "uz": "🎉 Broningiz tasdiqlandi! Kutamiz 🌿",
                 "en": "🎉 Your booking is confirmed! See you 🌿"},
@@ -3267,11 +3282,12 @@ CHALET_NAMES = {"comfort": "Шале Комфорт", "lux": "Президент
 # Короткие локализованные имена для гостя.
 CHALET_SHORT = {"comfort": {"ru": "Комфорт", "uz": "Komfort", "en": "Comfort"},
                 "lux": {"ru": "Президент Люкс", "uz": "Prezident Lyuks", "en": "President Lux"}}
-SLOT_PRICES = {"comfort": {"1": "1,5 млн", "2": "2 млн", "3": "3 млн"},
-               "lux": {"1": "3 млн", "2": "4 млн", "3": "6 млн"}}
-# Цены на выходные (Сб/Вс) — +20%.
-SLOT_PRICES_WE = {"comfort": {"1": "1,8 млн", "2": "2,4 млн", "3": "3,6 млн"},
-                  "lux": {"1": "3,6 млн", "2": "4,8 млн", "3": "7,2 млн"}}
+SLOT_PRICES = {"comfort": {"1": "2,5 млн", "2": "3 млн", "3": "4 млн"},
+               "lux": {"1": "4 млн", "2": "5 млн", "3": "7 млн"}}
+# Цены выходного дня (Сб/Вс и праздники) заданы ЯВНЫМИ числами, а НЕ процентом.
+# Фактическая разница с буднями 12–17%, поэтому «будни +20%» считать НЕЛЬЗЯ.
+SLOT_PRICES_WE = {"comfort": {"1": "2,8 млн", "2": "3,4 млн", "3": "4,6 млн"},
+                  "lux": {"1": "4,6 млн", "2": "5,8 млн", "3": "8,2 млн"}}
 _SLOT_ICON = {"1": "☀️", "2": "🌙", "3": "🌗"}
 
 
