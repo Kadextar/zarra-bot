@@ -3940,7 +3940,8 @@ async def on_webapp_data(message: Message):
     chalet = d.get("chalet")
     slot_no = str(d.get("slot", ""))
     iso = d.get("date", "")
-    if chalet not in CHALET_NAMES or slot_no not in ("1", "2", "3"):
+    # Слот 4 — тапчан (день 10:00–20:00), приходит из мини-приложения.
+    if chalet not in CHALET_NAMES or slot_no not in ("1", "2", "3", "4"):
         return
     lead = {
         "chalet": CHALET_NAMES.get(chalet, chalet),
