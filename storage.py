@@ -58,6 +58,9 @@ def load_store() -> dict:
     data.setdefault("dash_user", "zarra")  # логин к веб-панели (Basic Auth)
     data.setdefault("dash_pass", None)     # пароль к веб-панели (Basic Auth)
     data.setdefault("dash_host", None)   # публичный IP сервера (определяется сам)
+    # Копия заявок в тему «Ресепшн» группы персонала (форум с темами).
+    data.setdefault("reception_chat_id", None)    # id группы персонала
+    data.setdefault("reception_thread_id", None)  # id темы внутри неё
     return data
 
 

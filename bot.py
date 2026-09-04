@@ -48,7 +48,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     Message, BusinessConnection, CallbackQuery, BotCommand, FSInputFile,
-    InputMediaPhoto, InputMediaVideo,
+    InputMediaPhoto, InputMediaVideo, MenuButtonWebApp, MenuButtonCommands,
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
     BotCommandScopeDefault, BotCommandScopeChat, WebAppInfo, BufferedInputFile,
@@ -1149,14 +1149,13 @@ def set_lang(chat_id, lang) -> None:
 def main_menu(lang=DEFAULT_LANG) -> ReplyKeyboardMarkup:
     lang = norm_lang(lang)
     b = lambda k: KeyboardButton(text=BTN[k][lang])
-    # Одна кнопка брони: приложение (если задана ссылка) ИЛИ пошаговый мастер.
-    url = store.get("webapp_url")
-    if url:
-        book_row = [KeyboardButton(text=L(lang, "webapp_btn"), web_app=WebAppInfo(url=url))]
-    else:
-        book_row = [b("book")]
-    rows = [book_row,
-            [b("prices"), b("photo")],
+    # Если задана ссылка на приложение — бронь живёт в СИНЕЙ КНОПКЕ МЕНЮ
+    # (слева от скрепки, см. apply_menu_button), поэтому в клавиатуре её нет.
+    # Без ссылки — оставляем кнопку пошагового мастера.
+    rows = []
+    if not store.get("webapp_url"):
+        rows.append([b("book")])
+    rows += [[b("prices"), b("photo")],
             [b("slots"), b("map")],
             [b("rest"), b("event")],
             [b("contact")]]
@@ -1419,6 +1418,26 @@ async def relay_to_group(chat_key: str, message: Message, text: str) -> None:
     save_store()
 
 
+async def notify_reception(text: str) -> None:
+    """Копия заявки в тему «Ресепшн» группы персонала — БЕЗ кнопок обработки.
+
+    Кнопки остаются только в группе заявок: если бы они были в обоих местах,
+    два сотрудника могли бы подтвердить одну бронь — а это овербукинг.
+    """
+    cid = store.get("reception_chat_id")
+    if not cid:
+        return
+    # Если ресепшн настроили на ту же группу, куда и так уходят заявки — не дублируем.
+    if str(cid) == str(store.get("leads_chat_id")):
+        return
+    try:
+        await bot.send_message(
+            cid, "🔔 Копия для ресепшн (обработка — в группе заявок)\n\n" + text,
+            message_thread_id=store.get("reception_thread_id"))
+    except Exception as e:
+        log.warning(f"reception copy: {e}")
+
+
 async def post_lead(lead: dict, chat_key: str, source: str, username: str | None = None):
     signature = json.dumps(lead, ensure_ascii=False, sort_keys=True)
     if last_lead.get(chat_key) == signature:
@@ -1451,6 +1470,7 @@ async def post_lead(lead: dict, chat_key: str, source: str, username: str | None
     map_relay(sent.message_id, chat_key)   # менеджер может ответить reply на карточку
     update_guest(chat_key, lead)           # CRM: запоминаем гостя
     save_store()
+    await notify_reception(text)           # копия в тему «Ресепшн», если настроена
 
 
 async def alert_human(chat_key: str, source: str, last_text: str):
@@ -1906,15 +1926,19 @@ async def cmd_set_webapp(message: Message):
     if url.lower() == "off":
         store["webapp_url"] = None
         save_store()
-        await message.answer("Кнопка приложения убрана. Нажмите /start, чтобы обновить меню.")
+        await apply_menu_button()
+        await message.answer("Кнопка приложения убрана. Нажмите /start, чтобы обновить меню.",
+                             reply_markup=main_menu(get_lang(message.chat.id)))
         return
     if not url.startswith("https://"):
         await message.answer("Ссылка должна начинаться с https:// (Telegram требует HTTPS).")
         return
     store["webapp_url"] = url
     save_store()
+    await apply_menu_button()
     await message.answer(
-        "✅ Ссылка сохранена! В меню появилась кнопка «🚀 Забронировать в приложении».",
+        "✅ Ссылка сохранена! Приложение открывается синей кнопкой «Забронировать» "
+        "слева от скрепки.",
         reply_markup=main_menu(get_lang(message.chat.id)))
 
 
@@ -2443,6 +2467,37 @@ async def cmd_dashboard_web(message: Message):
         "🔒 Пароль никому не показывай. Сменить: /set_dash_pass новый_пароль\n"
         f"Если не открывается — нужно открыть порт {DASH_PORT} на сервере "
         "(скажи мне — помогу).")
+
+
+@dp.message(Command("set_reception"))
+async def cmd_set_reception(message: Message):
+    """Запускается ВНУТРИ темы «Ресепшн» — бот сам запоминает группу и тему."""
+    if not _is_staff(message):
+        return
+    if message.chat.type not in ("group", "supergroup"):
+        await message.answer(
+            "Эту команду нужно отправить в самой теме «Ресепшн» "
+            "(внутри группы персонала), а не в личке.")
+        return
+    store["reception_chat_id"] = message.chat.id
+    store["reception_thread_id"] = message.message_thread_id
+    save_store()
+    where = "в эту тему" if message.message_thread_id else "в эту группу"
+    await message.answer(
+        f"✅ Готово. Копии новых заявок буду присылать {where}.\n\n"
+        "Кнопки обработки (подтвердить/отклонить) остаются только в группе заявок — "
+        "чтобы двое сотрудников случайно не подтвердили одну бронь.\n"
+        "Отключить: /reception_off")
+
+
+@dp.message(Command("reception_off"))
+async def cmd_reception_off(message: Message):
+    if not _is_staff(message):
+        return
+    store["reception_chat_id"] = None
+    store["reception_thread_id"] = None
+    save_store()
+    await message.answer("🔕 Копии заявок в «Ресепшн» отключены.")
 
 
 @dp.message(Command("set_dash_pass"))
@@ -4381,6 +4436,7 @@ STAFF_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="dashboard_web", description="Живая веб-панель"),
     BotCommand(command="revenue", description="AI-подсказки по ценам"),
     BotCommand(command="forecast", description="Прогноз на 14 дней"),
+    BotCommand(command="set_reception", description="Копии заявок в тему «Ресепшн»"),
     BotCommand(command="users", description="Пользователи (кто есть кто)"),
     BotCommand(command="find", description="Найти гостя"),
     BotCommand(command="chart", description="График загрузки"),
@@ -4392,6 +4448,22 @@ STAFF_COMMANDS = PUBLIC_COMMANDS + [
     BotCommand(command="media_status", description="Что загружено"),
     BotCommand(command="admins", description="Администраторы"),
 ]
+
+
+async def apply_menu_button() -> None:
+    """Кладёт мини-приложение в СИНЮЮ КНОПКУ МЕНЮ (слева от скрепки).
+    Гость видит там надпись «Забронировать» и открывает приложение одним касанием.
+    Если ссылка не задана — возвращаем обычное меню команд."""
+    url = store.get("webapp_url")
+    try:
+        if url and url.startswith("https://"):
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="Забронировать",
+                                             web_app=WebAppInfo(url=url)))
+        else:
+            await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    except Exception as e:
+        log.warning(f"menu button: {e}")
 
 
 async def apply_commands() -> None:
@@ -4542,6 +4614,7 @@ async def main():
     except Exception as e:
         log.warning(f"get_me: {e}")
     await apply_commands()
+    await apply_menu_button()
     await start_web()
     asyncio.create_task(detect_public_ip())
     asyncio.create_task(scheduler())
