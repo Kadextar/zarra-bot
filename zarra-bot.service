@@ -5,12 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# ⬇️ ЗАМЕНИ под свой сервер:
-#   User      — пользователь Linux (например ubuntu или opc на Oracle)
-#   WorkingDirectory и ExecStart — путь к папке zarra_bot на сервере
+# Пути ниже — как на рабочем сервере Oracle: папка называется zarra-bot,
+# ЧЕРЕЗ ДЕФИС (туда же делается git pull). При переносе на другой сервер
+# замени User и оба пути; проверить действующий юнит: systemctl cat zarra-bot
 User=ubuntu
-WorkingDirectory=/home/ubuntu/zarra_bot
-ExecStart=/home/ubuntu/zarra_bot/venv/bin/python /home/ubuntu/zarra_bot/bot.py
+WorkingDirectory=/home/ubuntu/zarra-bot
+ExecStart=/home/ubuntu/zarra-bot/venv/bin/python /home/ubuntu/zarra-bot/bot.py
 
 # Автоперезапуск при любом падении
 Restart=always

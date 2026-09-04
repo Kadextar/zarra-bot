@@ -63,8 +63,8 @@ python bot.py
 Один раз настроить на сервере:
 
 ```
-# 1. Скопировать сервис в систему (поправь путь, если папка другая)
-sudo cp /home/ubuntu/zarra_bot/zarra-bot.service /etc/systemd/system/
+# 1. Скопировать сервис в систему (на рабочем сервере папка — zarra-bot, через дефис)
+sudo cp /home/ubuntu/zarra-bot/zarra-bot.service /etc/systemd/system/
 
 # 2. Включить автозапуск и стартовать
 sudo systemctl daemon-reload
