@@ -93,7 +93,7 @@ Zarra Hotel & Resort — премиальный загородный резор�
 Девиз: «Где время становится роскошью».
 Telegram: @zarra_resort | Instagram: @zarraresort
 
-ТИПЫ ШАЛЕ (вилл):
+ТИПЫ РАЗМЕЩЕНИЯ (шале и тапчаны):
 
 1) ШАЛЕ КОМФОРТ — всего 9 вилл (можно бронировать до 9 одновременно на одну дату).
    - Спальных мест: 2 — С НОЧЁВКОЙ остаться могут максимум 2 человека.
@@ -111,6 +111,17 @@ Telegram: @zarra_resort | Instagram: @zarraresort
    - Слот 1, с 10:00 до 17:00 (7 часов) — 4 млн / 4,6 млн сум
    - Слот 2, с 18:00 до 09:00 (15 часов) — 5 млн / 5,8 млн сум
    - Слот 3, ПОЛНЫЙ ДЕНЬ с 10:00 до 09:00 (23 часа) — 7 млн / 8,2 млн сум
+
+3) ТАПЧАН — всего 7 штук (до 7 одновременно на одну дату).
+   - Это НЕ шале и НЕ вилла: беседка/зона отдыха на территории.
+   - ТОЛЬКО ДНЁМ, с 10:00 до 20:00. ПЕРЕНОЧЕВАТЬ на тапчане НЕЛЬЗЯ.
+   - Слотов 1/2/3 у тапчана нет — только это дневное время.
+   ЦЕНА (в выходные и праздники НАЦЕНКИ НЕТ, цена одна и та же):
+   - 1 000 000 сум — если гостей до 8 включительно.
+   - Свыше 8 гостей: +100 000 сум за КАЖДОГО дополнительного гостя.
+   - Максимум 12 гостей на один тапчан. Нужно больше — предложи несколько
+     тапчанов или шале.
+   Примеры: 8 гостей — 1 000 000; 10 гостей — 1 200 000; 12 гостей — 1 400 000.
 
 ВАЖНО ПРО ЦЕНЫ:
 - По субботам, воскресеньям и в праздничные дни действует цена выходного дня —
@@ -259,8 +270,10 @@ RULES = """
 
 ПОДБОР ПОД МЕРОПРИЯТИЕ (важно, будь как консьерж):
 - Если гость описывает событие (повод, число гостей, дата, пожелания) — АКТИВНО
-  подбери: какое шале подходит по числу гостей (до 8 — Комфорт; 9–15 — Люкс;
-  больше 15 — предложи несколько вилл и связь с сотрудником), какой слот уместен
+  подбери: какое размещение подходит по числу гостей (до 8 — Комфорт или Тапчан;
+  9–15 — Люкс; больше 15 — предложи несколько вилл и связь с сотрудником). Тапчан
+  предлагай, только если гости НЕ остаются на ночь и укладываются в 10:00–20:00 —
+  это самый бюджетный вариант для дневного отдыха. Дальше — какой слот уместен
   (день рождения днём — слот 1 или 3; ночёвка — слот 2/3), и назови ПРИМЕРНУЮ
   стоимость для нужной даты (в выходные/праздники бери готовую цену выходного
   дня; все суммы — из блока актуальных цен).
@@ -330,6 +343,9 @@ PRICES_TEXT = {
         "«Президент Люкс» (3 виллы) — ночёвка до 7 чел., до 15 гостей:\n"
         "• День 10:00–17:00 — {l1}\n• Ночь 18:00–09:00 — {l2}\n"
         "• Полный день — {l3}\n\n"
+        "«Тапчан» (7 шт.) — только днём 10:00–20:00, без ночёвки:\n"
+        "• 1 млн до 8 гостей, далее +100 000 за каждого (максимум 12)\n"
+        "• В выходные наценки нет\n\n"
         "Цены в сумах. В стоимость входит бассейн с подогревом и блюда\n"
         "из меню ресторана на сумму до 1 000 000 сум.\n"
         "Можно проводить дни рождения и мероприятия 🎉\n"
@@ -343,6 +359,9 @@ PRICES_TEXT = {
         "«Prezident Lyuks» (3 villa) — tunash 7 kishigacha, 15 mehmongacha:\n"
         "• Kunduzi 10:00–17:00 — {l1}\n• Tunda 18:00–09:00 — {l2}\n"
         "• To‘liq kun — {l3}\n\n"
+        "«Tapchan» (7 ta) — faqat kunduzi 10:00–20:00, tunashsiz:\n"
+        "• 8 mehmongacha 1 mln, keyin har biri +100 000 (ko‘pi bilan 12)\n"
+        "• Dam olish kunlarida qo‘shimcha haq yo‘q\n\n"
         "Narxlar so‘mda. Narxga isitiladigan basseyn va restoran menyusidan\n"
         "1 000 000 so‘mgacha taomlar kiradi.\n"
         "Tug‘ilgan kun va tadbirlar o‘tkazish mumkin 🎉\n"
@@ -356,6 +375,9 @@ PRICES_TEXT = {
         "“President Lux” (3 villas) — overnight up to 7, up to 15 guests:\n"
         "• Day 10:00–17:00 — {l1}\n• Night 18:00–09:00 — {l2}\n"
         "• Full day — {l3}\n\n"
+        "“Tapchan” (7 units) — daytime only 10:00–20:00, no overnight:\n"
+        "• 1M for up to 8 guests, then +100,000 each (12 max)\n"
+        "• No weekend surcharge\n\n"
         "Prices in UZS (so‘m). Includes the heated pool and up to\n"
         "1,000,000 so‘m of dishes from the restaurant menu.\n"
         "Birthdays and events are welcome 🎉\n"
@@ -787,6 +809,34 @@ T = {
         "ru": "👑 Президент Люкс (ночёвка до 7, до 15)",
         "uz": "👑 Prezident Lyuks (tunash 7 gacha, 15)",
         "en": "👑 President Lux (overnight up to 7, 15)"},
+    "bk_chalet_tapchan": {
+        "ru": "🌤 Тапчан (день, до 12 гостей, от 1 млн)",
+        "uz": "🌤 Tapchan (kunduzi, 12 mehmongacha, 1 mln dan)",
+        "en": "🌤 Tapchan (daytime, up to 12 guests, from 1M)"},
+    "bk_tapchan_note": {
+        "ru": "🌤 Тапчан: только дневное время 10:00–20:00, без ночёвки.\n"
+              "Цена: 1 000 000 сум до 8 гостей, далее +100 000 сум за каждого "
+              "(максимум 12 гостей).",
+        "uz": "🌤 Tapchan: faqat kunduzi 10:00–20:00, tunashsiz.\n"
+              "Narx: 8 mehmongacha 1 000 000 so‘m, keyin har biri uchun "
+              "+100 000 so‘m (ko‘pi bilan 12 mehmon).",
+        "en": "🌤 Tapchan: daytime only 10:00–20:00, no overnight stay.\n"
+              "Price: 1,000,000 UZS for up to 8 guests, then +100,000 per extra "
+              "guest (12 guests max)."},
+    "bk_tapchan_toomany": {
+        "ru": "На один тапчан можно максимум 12 гостей 🙂\n"
+              "Напишите число до 12 — или возьмите несколько тапчанов "
+              "(тогда напишите об этом в пожеланиях).",
+        "uz": "Bitta tapchanga ko‘pi bilan 12 mehmon 🙂\n"
+              "12 gacha raqam yozing — yoki bir nechta tapchan oling "
+              "(buni izohda yozing).",
+        "en": "One tapchan fits up to 12 guests 🙂\n"
+              "Enter a number up to 12 — or book several tapchans "
+              "(mention it in the comments)."},
+    "bk_tapchan_price": {
+        "ru": "💰 Стоимость тапчана на {n} гостей — {sum}.",
+        "uz": "💰 {n} mehmon uchun tapchan narxi — {sum}.",
+        "en": "💰 Tapchan for {n} guests — {sum}."},
     "bk_slot_prompt": {
         "ru": "Выберите тариф (слот по времени) 👇",
         "uz": "Tarifni (vaqt slotini) tanlang 👇",
@@ -964,6 +1014,8 @@ SLOT_LABELS_L = {
     "1": {"ru": "День 10:00–17:00", "uz": "Kunduzi 10:00–17:00", "en": "Day 10:00–17:00"},
     "2": {"ru": "Ночь 18:00–09:00", "uz": "Tunda 18:00–09:00", "en": "Night 18:00–09:00"},
     "3": {"ru": "Полный день 10:00–09:00", "uz": "To‘liq kun 10:00–09:00", "en": "Full day 10:00–09:00"},
+    # Слот 4 — только для тапчанов: дневное время, без ночёвки.
+    "4": {"ru": "День 10:00–20:00", "uz": "Kunduzi 10:00–20:00", "en": "Day 10:00–20:00"},
 }
 
 # Короткие названия дней/месяцев для кнопок-дат.
@@ -990,8 +1042,9 @@ def fmt_date_human(iso: str, lang: str) -> str:
 
 # --- Занятость шале с учётом КОЛИЧЕСТВА вилл -----------------------------------
 # Всего вилл каждого типа (одновременно столько броней можно взять на дату+слот).
-CHALET_CAP = {"comfort": 9, "lux": 3}
-# Слот занимает время: 1 — день, 2 — ночь, 3 (полный день) — и день, и ночь.
+CHALET_CAP = {"comfort": 9, "lux": 3, "tapchan": 7}
+# Слот занимает время: 1 — день, 2 — ночь, 3 (полный день) — и день, и ночь,
+# 4 — день у тапчана (10:00–20:00), ночёвки у тапчанов нет.
 
 
 def _usage(chalet: str, iso: str) -> tuple:
@@ -1000,7 +1053,7 @@ def _usage(chalet: str, iso: str) -> tuple:
     for b in store.get("booked", []):
         if b.get("chalet") == chalet and b.get("date") == iso:
             s = str(b.get("slot"))
-            if s in ("1", "3"):
+            if s in ("1", "3", "4"):
                 day += 1
             if s in ("2", "3"):
                 night += 1
@@ -1019,7 +1072,7 @@ def is_date_busy(chalet: str, iso: str, slot: str) -> bool:
     cap = CHALET_CAP.get(chalet, 1)
     day, night = _usage(chalet, iso)
     s = str(slot)
-    if s == "1":
+    if s in ("1", "4"):
         return day >= cap
     if s == "2":
         return night >= cap
@@ -1879,9 +1932,14 @@ async def cmd_prices(message: Message):
         lines.append(f"🏡 {nm}:")
         for s, sn in (("1", "День"), ("2", "Ночь"), ("3", "Полный день")):
             lines.append(f"  {sn}: {get_price(ch, s, False)} / {get_price(ch, s, True)}")
+    lines += ["🌤 Тапчан (7 шт., только день 10:00–20:00):",
+              f"  до {TAPCHAN_INCLUDED} гостей: {fmt_sum(TAPCHAN_BASE, 'ru')}",
+              f"  каждый сверх {TAPCHAN_INCLUDED}: +{fmt_sum(TAPCHAN_EXTRA, 'ru')} "
+              f"(максимум {TAPCHAN_MAX} гостей, наценки за выходные нет)"]
     lines += ["",
               "Изменить: /setprice <шале> <слот 1-3> <будни|вых> <цена>",
               "Пример: /setprice comfort 1 будни 1,6 млн",
+              "⚠️ Цена тапчана задана в коде — скажи мне, если надо поменять.",
               "⚠️ Цены в мини-приложении меняются отдельно — скажи мне, обновлю."]
     await message.answer("\n".join(lines))
 
@@ -2096,7 +2154,8 @@ async def cmd_remove_admin(message: Message):
 
 # --- Управление занятостью дат (для своих) -------------------------------------
 _CHALET_ALIASES = {"lux": "lux", "люкс": "lux", "президент": "lux",
-                   "comfort": "comfort", "комфорт": "comfort"}
+                   "comfort": "comfort", "комфорт": "comfort",
+                   "tapchan": "tapchan", "тапчан": "tapchan"}
 
 
 def _parse_busy_args(text: str):
@@ -2156,11 +2215,12 @@ async def cmd_busy(message: Message):
         return
     arg = (message.text or "").partition(" ")[2].strip().lower()
     only = _CHALET_ALIASES.get(arg)   # /busy lux — только люкс
-    chalets = [only] if only else ["comfort", "lux"]
+    chalets = [only] if only else ["comfort", "lux", "tapchan"]
     today = tashkent_now().date()
     # Показываем только даты, где что-то занято (чтобы не спамить пустыми днями).
-    lines = ["📅 Загрузка (свободно вилл: день / ночь)\n"
-             f"Всего: Комфорт {CHALET_CAP['comfort']}, Люкс {CHALET_CAP['lux']}\n"]
+    lines = ["📅 Загрузка (свободно: день / ночь)\n"
+             f"Всего: Комфорт {CHALET_CAP['comfort']}, Люкс {CHALET_CAP['lux']}, "
+             f"Тапчан {CHALET_CAP['tapchan']} (только день)\n"]
     any_row = False
     for i in range(60):
         d = today + timedelta(days=i)
@@ -2824,7 +2884,7 @@ def lead_revenue(lead: dict):
         return None
     try:
         we = is_surcharge_day(datetime.strptime(d["date_iso"], "%Y-%m-%d"))
-        return price_num(d["chalet_key"], d["slot_no"], we)
+        return price_num(d["chalet_key"], d["slot_no"], we, d.get("guests_total"))
     except Exception:
         return None
 
@@ -3153,7 +3213,8 @@ async def on_lead_action(cb: CallbackQuery):
         if data.get("chalet_key") and data.get("slot_no") and data.get("date_iso"):
             try:
                 we = is_surcharge_day(datetime.strptime(data["date_iso"], "%Y-%m-%d"))
-                num = price_num(data["chalet_key"], data["slot_no"], we)
+                num = price_num(data["chalet_key"], data["slot_no"], we,
+                                data.get("guests_total"))
                 if num:
                     amt = " — " + fmt_sum(num // 2, glang)
             except Exception:
@@ -3311,16 +3372,42 @@ class Booking(StatesGroup):
 
 
 # Имена для карточки СОТРУДНИКАМ (всегда на русском — админы русскоязычные).
-CHALET_NAMES = {"comfort": "Шале Комфорт", "lux": "Президент Люкс"}
+CHALET_NAMES = {"comfort": "Шале Комфорт", "lux": "Президент Люкс", "tapchan": "Тапчан"}
 # Короткие локализованные имена для гостя.
 CHALET_SHORT = {"comfort": {"ru": "Комфорт", "uz": "Komfort", "en": "Comfort"},
-                "lux": {"ru": "Президент Люкс", "uz": "Prezident Lyuks", "en": "President Lux"}}
+                "lux": {"ru": "Президент Люкс", "uz": "Prezident Lyuks", "en": "President Lux"},
+                "tapchan": {"ru": "Тапчан", "uz": "Tapchan", "en": "Tapchan"}}
 SLOT_PRICES = {"comfort": {"1": "2,5 млн", "2": "3 млн", "3": "4 млн"},
-               "lux": {"1": "4 млн", "2": "5 млн", "3": "7 млн"}}
+               "lux": {"1": "4 млн", "2": "5 млн", "3": "7 млн"},
+               # Тапчан: базовая цена до 8 гостей, дальше доплата за каждого.
+               "tapchan": {"4": "1 млн"}}
 # Цены выходного дня (Сб/Вс и праздники) заданы ЯВНЫМИ числами, а НЕ процентом.
 # Фактическая разница с буднями 12–17%, поэтому «будни +20%» считать НЕЛЬЗЯ.
 SLOT_PRICES_WE = {"comfort": {"1": "2,8 млн", "2": "3,4 млн", "3": "4,6 млн"},
-                  "lux": {"1": "4,6 млн", "2": "5,8 млн", "3": "8,2 млн"}}
+                  "lux": {"1": "4,6 млн", "2": "5,8 млн", "3": "8,2 млн"},
+                  # У тапчанов наценки за выходные НЕТ — цена та же.
+                  "tapchan": {"4": "1 млн"}}
+
+# --- Тапчаны: цена считается от числа гостей ------------------------------------
+TAPCHAN_BASE = 1_000_000     # базовая цена — включает до 8 гостей
+TAPCHAN_EXTRA = 100_000      # доплата за каждого гостя сверх 8
+TAPCHAN_INCLUDED = 8         # сколько гостей входит в базовую цену
+TAPCHAN_MAX = 12             # больше 12 гостей на один тапчан нельзя
+
+
+def parse_guests(v):
+    """Достаёт число гостей из текста: «10», «10 человек», «на 12 гостей» -> int."""
+    if v is None:
+        return None
+    m = re.search(r"\d+", str(v))
+    return int(m.group()) if m else None
+
+
+def tapchan_price_num(guests=None) -> int:
+    """Цена тапчана: 1 млн до 8 гостей, далее +100 000 за каждого (максимум 12)."""
+    g = parse_guests(guests) or TAPCHAN_INCLUDED
+    g = max(1, min(g, TAPCHAN_MAX))
+    return TAPCHAN_BASE + max(0, g - TAPCHAN_INCLUDED) * TAPCHAN_EXTRA
 _SLOT_ICON = {"1": "☀️", "2": "🌙", "3": "🌗"}
 
 
@@ -3352,7 +3439,10 @@ def price_to_num(s: str):
         return None
 
 
-def price_num(chalet: str, slot, weekend: bool):
+def price_num(chalet: str, slot, weekend: bool, guests=None):
+    # У тапчана цена зависит от числа гостей, а не от буднего/выходного дня.
+    if chalet == "tapchan":
+        return tapchan_price_num(guests)
     return price_to_num(get_price(chalet, slot, weekend))
 
 
@@ -3392,6 +3482,7 @@ def book_chalet_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=L(lang, "bk_chalet_comfort"), callback_data="bk:ch:comfort")],
         [InlineKeyboardButton(text=L(lang, "bk_chalet_lux"), callback_data="bk:ch:lux")],
+        [InlineKeyboardButton(text=L(lang, "bk_chalet_tapchan"), callback_data="bk:ch:tapchan")],
         [InlineKeyboardButton(text=WIZ["cancel"][lang], callback_data="bk:cancel")],
     ])
 
@@ -3399,7 +3490,9 @@ def book_chalet_kb(lang: str) -> InlineKeyboardMarkup:
 def slot_kb(chalet: str, lang: str, surcharge=None) -> InlineKeyboardMarkup:
     # surcharge: True -> цена выходного, False -> будни, None -> обе (дата неизвестна).
     rows = []
-    for s in ("1", "2", "3"):
+    # У тапчана слот один; обычно сюда не заходим (слот ставится автоматически).
+    slots = ("4",) if chalet == "tapchan" else ("1", "2", "3")
+    for s in slots:
         if surcharge is True:
             price = get_price(chalet, s, True)
         elif surcharge is False:
@@ -3523,6 +3616,14 @@ def _surcharge_of(iso: str):
 
 async def _ask_slot(target, state: FSMContext, lang: str):
     d = await state.get_data()
+    # У тапчана слот один (день 10:00–20:00) — не спрашиваем, ставим сами.
+    if d.get("chalet") == "tapchan":
+        await state.update_data(slot=SLOT_LABELS_L["4"]["ru"],
+                                slot_disp=SLOT_LABELS_L["4"][lang], slot_no="4")
+        await state.set_state(Booking.guests)
+        await target.answer(L(lang, "bk_tapchan_note"))
+        await target.answer(L(lang, "bk_guests"))
+        return
     surcharge = _surcharge_of(d.get("date_iso", ""))
     await state.set_state(Booking.slot)
     await target.answer(L(lang, "bk_slot_prompt"),
@@ -3613,6 +3714,16 @@ async def bk_guests(message: Message, state: FSMContext):
     if t is None:
         return
     lang = await _wiz_lang(state)
+    d = await state.get_data()
+    # Тапчан: не больше 12 гостей, и сразу показываем итоговую цену.
+    if d.get("chalet") == "tapchan":
+        n = parse_guests(t)
+        if n and n > TAPCHAN_MAX:
+            await message.answer(L(lang, "bk_tapchan_toomany"))
+            return
+        if n:
+            await message.answer(L(lang, "bk_tapchan_price", n=n,
+                                   sum=fmt_sum(tapchan_price_num(n), lang)))
     await state.update_data(guests=t)
     await state.set_state(Booking.name)
     await message.answer(L(lang, "bk_name"))
